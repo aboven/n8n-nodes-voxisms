@@ -1,6 +1,7 @@
 import {
 	NodeApiError,
 	NodeOperationError,
+	NodeConnectionTypes,
 	type IDataObject,
 	type IHookFunctions,
 	type IHttpRequestOptions,
@@ -11,7 +12,6 @@ import {
 	type JsonObject,
 } from 'n8n-workflow';
 
-import { buildSignedHeaders, normalizeCustomerId, SUBSCRIPTIONS_PATH } from '../shared/signing';
 import { verifySignature } from '../shared/verifySignature';
 
 // Full v2 URLs. The signed canonical uses the base-path-stripped path (SUBSCRIPTIONS_PATH,
@@ -49,12 +49,13 @@ export class VoxiSmsTrigger implements INodeType {
 		defaults: {
 			name: 'VoxiSMS Trigger',
 		},
+		subtitle: 'On inbound SMS',
 		// No user-configurable parameters: the subscription is driven entirely by the
 		// credential and the auto-generated webhook URL. Required by INodeTypeDescription.
 		properties: [],
 		// A trigger has no data inputs; it is fed by an incoming webhook, not an upstream node.
 		inputs: [],
-		outputs: ['main'],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				// Credential type owned by the parallel Send-SMS agent; referenced here by name.
@@ -97,15 +98,8 @@ export class VoxiSmsTrigger implements INodeType {
 					);
 				}
 
-				const credentials = await this.getCredentials('voxiSmsApi');
-				// Normalize ONCE and reuse the same value for both the signed canonical and the
-				// `customer-id` header, so they cannot disagree.
-				const customerId = normalizeCustomerId(credentials.customerId as string);
-				const secretKey = credentials.secretKey as string;
-
-				// CRITICAL INVARIANT: serialize the body ONCE, then sign and send that exact
-				// string. Never let the HTTP helper re-serialize a parsed object — a re-serialize
-				// can reorder keys or change whitespace and break the signature the server checks.
+				// Serialize EXACTLY ONCE and send that string verbatim: the credential signs the
+				// bytes it is handed, so re-encoding an object here would break the signature.
 				const bodyString = JSON.stringify({
 					targetUrl: webhookUrl,
 					eventTypes: [EVENT_TYPE],
@@ -115,23 +109,11 @@ export class VoxiSmsTrigger implements INodeType {
 					provider: 'generic',
 				});
 
-				const headers = {
-					...buildSignedHeaders({
-						method: 'POST',
-						path: SUBSCRIPTIONS_PATH,
-						customerId,
-						secretKey,
-						bodyString,
-					}),
-					'Content-Type': 'application/json',
-				};
-
 				const options: IHttpRequestOptions = {
 					method: 'POST',
 					url: SUBSCRIPTIONS_URL,
-					headers,
-					// Pass the pre-serialized string as the body and DO NOT set `json: true`; that
-					// keeps the exact signed bytes on the wire (see the invariant above).
+					headers: { 'Content-Type': 'application/json' },
+				// json:false keeps the signed bytes on the wire.
 					body: bodyString,
 					json: false,
 					// Inspect the status ourselves so a non-2xx becomes a friendly, mapped error
@@ -141,7 +123,11 @@ export class VoxiSmsTrigger implements INodeType {
 					ignoreHttpStatusErrors: true,
 				};
 
-				const response = (await this.helpers.httpRequest(options)) as {
+				const response = (await this.helpers.httpRequestWithAuthentication.call(
+					this,
+					'voxiSmsApi',
+					options,
+				)) as {
 					statusCode: number;
 					body: unknown;
 				};
@@ -214,37 +200,23 @@ export class VoxiSmsTrigger implements INodeType {
 					return true;
 				}
 
-				const credentials = await this.getCredentials('voxiSmsApi');
-				const customerId = normalizeCustomerId(credentials.customerId as string);
-				const secretKey = credentials.secretKey as string;
-
-				// The DELETE route is dynamic and the id is part of the signed path
-				// (base-path-stripped, no `/v2`). Body is empty, so the canonical ends in a
-				// trailing '\n' (buildSignedHeaders default bodyString = '').
-				const path = `${SUBSCRIPTIONS_PATH}/${subscriptionId}`;
-
-				const headers = buildSignedHeaders({
-					method: 'DELETE',
-					path,
-					customerId,
-					secretKey,
-				});
-
 				const options: IHttpRequestOptions = {
 					method: 'DELETE',
 					url: `${SUBSCRIPTIONS_URL}/${subscriptionId}`,
-					headers,
 					// A 404 means the subscription is already gone server-side — that is the desired
 					// end state, so do not throw on it; ignore HTTP status errors and treat as done.
 					ignoreHttpStatusErrors: true,
 				};
 
 				try {
-					await this.helpers.httpRequest(options);
-				} catch {
+					await this.helpers.httpRequestWithAuthentication.call(this, 'voxiSmsApi', options);
+				} catch (error) {
 					// Network/other failure while unsubscribing: swallow it so deactivation still
 					// clears local state. A stale server-side subscription will simply deliver to a
 					// URL that now rejects, which is harmless (and re-activation re-creates one).
+					this.logger.warn(
+						`VoxiSMS: could not remove webhook subscription ${subscriptionId}: ${(error as Error).message}`,
+					);
 				}
 
 				// Always clear both keys so a later checkExists reports "no subscription" and a

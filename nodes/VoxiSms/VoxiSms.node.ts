@@ -1,35 +1,15 @@
 import { randomUUID } from 'crypto';
 import type {
-	ICredentialTestFunctions,
-	ICredentialsDecrypted,
 	IDataObject,
 	IExecuteFunctions,
-	INodeCredentialTestResult,
 	INodeExecutionData,
 	INodeType,
 	INodeTypeDescription,
 	JsonObject,
 } from 'n8n-workflow';
-import { NodeApiError } from 'n8n-workflow';
+import { NodeApiError, NodeConnectionTypes } from 'n8n-workflow';
 
-import {
-	buildSignedHeaders,
-	normalizeCustomerId,
-	ENQUEUE_PATH,
-	STATUS_PATH,
-} from '../shared/signing';
-
-// Full URLs (the `/v2` base path lives here, in the URL). The SIGNED path is the
-// base-path-stripped route constant (ENQUEUE_PATH / STATUS_PATH) — API Gateway strips
-// `/v2` before the Lambda signs, so the URL path and the signed path differ on purpose.
 const ENQUEUE_URL = 'https://api.voxisms.com/v2/enqueue-message';
-const STATUS_URL = 'https://api.voxisms.com/v2/user/status';
-
-// Shape of the decrypted credential fields.
-interface VoxiSmsCredentials {
-	customerId: string;
-	secretKey: string;
-}
 
 // Best-effort JSON parse of an HTTP response body. n8n's httpRequest usually parses a
 // JSON response into an object already, but a string can come back (e.g. non-JSON
@@ -65,14 +45,14 @@ export class VoxiSms implements INodeType {
 		defaults: {
 			name: 'VoxiSMS',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		subtitle: '=Send SMS to {{$parameter["recipient"]}}',
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'voxiSmsApi',
 				required: true,
-				// Wires the "Test" button in the credential modal to voxiSmsApiTest below.
-				testedBy: 'voxiSmsApiTest',
 			},
 		],
 		// Flat, single-action node (like the Zapier "Send SMS" action) — no
@@ -106,93 +86,9 @@ export class VoxiSms implements INodeType {
 		],
 	};
 
-	methods = {
-		credentialTest: {
-			// Side-effect-free credential check: a signed GET to the read-only status
-			// endpoint (does NOT send an SMS). Success is HTTP 200; the endpoint returns
-			// distinct failure codes we map to the same friendly messages as the Zapier
-			// integration's authentication test.
-			async voxiSmsApiTest(
-				this: ICredentialTestFunctions,
-				credential: ICredentialsDecrypted,
-			): Promise<INodeCredentialTestResult> {
-				const data = (credential.data ?? {}) as unknown as VoxiSmsCredentials;
-
-				// Normalize ONCE and reuse for both the signed canonical and the customer-id
-				// header (buildSignedHeaders uses this same value for both, so they can't
-				// disagree).
-				const customerId = normalizeCustomerId(data.customerId ?? '');
-				const secretKey = data.secretKey ?? '';
-
-				// Body-less GET: bodyString defaults to '' inside buildSignedHeaders, so the
-				// canonical ends in a trailing '\n' + empty segment, matching the server's
-				// `body: b""`.
-				const headers = buildSignedHeaders({
-					method: 'GET',
-					path: STATUS_PATH,
-					customerId,
-					secretKey,
-				});
-
-				let statusCode: number;
-				try {
-					// Legacy request helper (the only one exposed to credential tests). We
-					// inspect the status ourselves — resolveWithFullResponse gives us the
-					// status, simple:false stops it throwing on non-2xx.
-					const response = await this.helpers.request({
-						method: 'GET',
-						uri: STATUS_URL,
-						headers,
-						resolveWithFullResponse: true,
-						simple: false,
-					});
-					statusCode = response.statusCode as number;
-				} catch (error) {
-					// A transport-level failure (DNS, TLS, timeout) — not an HTTP status.
-					return {
-						status: 'Error',
-						message: `Could not reach VoxiSMS: ${(error as Error).message}`,
-					};
-				}
-
-				if (statusCode === 200) {
-					return { status: 'OK', message: 'Connection successful!' };
-				}
-				if (statusCode === 403) {
-					return {
-						status: 'Error',
-						message:
-							'Authentication failed. Check your Token, and make sure your system clock is accurate (requests must be within 5 minutes of server time).',
-					};
-				}
-				if (statusCode === 404) {
-					return {
-						status: 'Error',
-						message: 'Customer ID not found. Check the phone number you registered.',
-					};
-				}
-				if (statusCode === 400) {
-					return {
-						status: 'Error',
-						message: 'This account is not fully set up yet. Contact VoxiSMS support.',
-					};
-				}
-				return {
-					status: 'Error',
-					message: 'Could not verify credentials. Check your Customer ID and Token.',
-				};
-			},
-		},
-	};
-
 	async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
 		const items = this.getInputData();
 		const returnData: INodeExecutionData[] = [];
-
-		// Credentials are the same for every item; fetch and normalize ONCE.
-		const credentials = (await this.getCredentials('voxiSmsApi')) as unknown as VoxiSmsCredentials;
-		const customerId = normalizeCustomerId(credentials.customerId ?? '');
-		const secretKey = credentials.secretKey ?? '';
 
 		for (let i = 0; i < items.length; i++) {
 			try {
@@ -200,12 +96,9 @@ export class VoxiSms implements INodeType {
 				const message = this.getNodeParameter('message', i) as string;
 				const id = this.getNodeParameter('id', i, '') as string;
 
-				// CRITICAL INVARIANT — sign-once / send-same-bytes:
-				// Serialize the body EXACTLY ONCE with JSON.stringify, sign THAT string, then
-				// send THAT string verbatim on the wire. Re-serializing (or letting the HTTP
-				// client re-encode an object) could reorder keys or change spacing and break
-				// the signature. That's why `body` below is the string, NOT an object, and we
-				// set Content-Type ourselves (json:true is intentionally NOT used).
+				// Serialize EXACTLY ONCE and send that string verbatim: the credential signs the
+				// bytes it is handed, so re-encoding an object here would reorder keys and break
+				// the signature.
 				const bodyString = JSON.stringify({
 					id: id || randomUUID(),
 					recipient,
@@ -213,28 +106,21 @@ export class VoxiSms implements INodeType {
 					source: 'n8n',
 				});
 
-				const headers = {
-					...buildSignedHeaders({
-						method: 'POST',
-						path: ENQUEUE_PATH,
-						customerId,
-						secretKey,
-						bodyString,
-					}),
-					'Content-Type': 'application/json',
-				};
-
 				// returnFullResponse: read the status ourselves for friendly errors.
 				// ignoreHttpStatusErrors: don't throw on non-2xx — we map them below.
-				// body is the already-serialized string; httpRequest sends it verbatim.
-				const response = await this.helpers.httpRequest({
-					method: 'POST',
-					url: ENQUEUE_URL,
-					headers,
-					body: bodyString,
-					returnFullResponse: true,
-					ignoreHttpStatusErrors: true,
-				});
+				const response = await this.helpers.httpRequestWithAuthentication.call(
+					this,
+					'voxiSmsApi',
+					{
+						method: 'POST',
+						url: ENQUEUE_URL,
+						headers: { 'Content-Type': 'application/json' },
+						body: bodyString,
+						json: false,
+						returnFullResponse: true,
+						ignoreHttpStatusErrors: true,
+					},
+				);
 
 				const statusCode = response.statusCode;
 				const body = response.body;
@@ -276,7 +162,10 @@ export class VoxiSms implements INodeType {
 					});
 					continue;
 				}
-				throw error;
+					throw new NodeApiError(this.getNode(), error as JsonObject, {
+						message: (error as Error).message,
+						itemIndex: i,
+					});
 			}
 		}
 

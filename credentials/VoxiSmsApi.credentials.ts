@@ -1,21 +1,36 @@
-import type { ICredentialType, INodeProperties } from 'n8n-workflow';
+import type {
+	IAuthenticate,
+	ICredentialDataDecryptedObject,
+	ICredentialTestRequest,
+	ICredentialType,
+	Icon,
+	IHttpRequestOptions,
+	INodeProperties,
+} from 'n8n-workflow';
 
-// VoxiSMS credential definition.
-//
-// Auth is per-user HMAC (VoxiSMS v2): every request is signed with the user's secret
-// token — there is NO shared api-key, and neither `customerId` nor `secretKey` is ever
-// sent in the request body. The three signed headers (customer-id, timestamp, signature)
-// are built per-request by `buildSignedHeaders` in `nodes/shared/signing.ts`.
-//
-// We deliberately do NOT declare a generic `authenticate` block here. n8n's generic auth
-// can only inject static headers/query params; our signature depends on the HTTP method,
-// the base-path-stripped route, a fresh timestamp, AND the exact request-body bytes. That
-// is request-specific, so signing happens inside each node (the Send node and the
-// connection test) where those values are known — never as a one-size-fits-all header.
+import { buildSignedHeaders, normalizeCustomerId, STATUS_PATH } from '../nodes/shared/signing';
+
+const BASE_URL = 'https://api.voxisms.com/v2';
+
+// API Gateway strips the `/v2` base path before the Lambda signs, so the signed path is
+// the route without it.
+const signedPath = (url: string): string => new URL(url).pathname.replace(/^\/v2/, '');
+
+// The bytes on the wire must be the bytes that were signed: a pre-serialized string is
+// passed through untouched, an object is serialized exactly once here.
+const bodyToSign = (body: IHttpRequestOptions['body']): string => {
+	if (body === undefined || body === null) {
+		return '';
+	}
+	return typeof body === 'string' ? body : JSON.stringify(body);
+};
+
 export class VoxiSmsApi implements ICredentialType {
 	name = 'voxiSmsApi';
 
 	displayName = 'VoxiSMS API';
+
+	icon: Icon = 'file:../nodes/VoxiSms/voxisms.svg';
 
 	// Points at the VoxiPlan dashboard page where users find both fields below.
 	documentationUrl = 'https://app.voxiplan.com/voxisms';
@@ -47,4 +62,38 @@ export class VoxiSmsApi implements ICredentialType {
 				'Copy the token shown under "Activate your token" on the "Link your phone" page (https://app.voxiplan.com/voxisms) in your VoxiPlan dashboard — it\'s the same token you paste from the VoxiSMS Android app during setup.',
 		},
 	];
+
+	// Per-user HMAC (VoxiSMS v2): there is no shared api-key, and neither field below is
+	// ever sent in the body. The signature covers method, route, timestamp, customer id and
+	// the exact body bytes, so it is computed per request rather than as a static header.
+	authenticate: IAuthenticate = async (
+		credentials: ICredentialDataDecryptedObject,
+		requestOptions: IHttpRequestOptions,
+	): Promise<IHttpRequestOptions> => {
+		const url = requestOptions.baseURL
+			? `${requestOptions.baseURL.replace(/\/$/, '')}${requestOptions.url}`
+			: requestOptions.url;
+
+		requestOptions.headers = {
+			...requestOptions.headers,
+			...buildSignedHeaders({
+				method: requestOptions.method ?? 'GET',
+				path: signedPath(url),
+				// Normalize ONCE so the signed canonical and the customer-id header cannot disagree.
+				customerId: normalizeCustomerId((credentials.customerId as string) ?? ''),
+				secretKey: (credentials.secretKey as string) ?? '',
+				bodyString: bodyToSign(requestOptions.body),
+			}),
+		};
+
+		return requestOptions;
+	};
+
+	test: ICredentialTestRequest = {
+		request: {
+			baseURL: BASE_URL,
+			url: STATUS_PATH,
+			method: 'GET',
+		},
+	};
 }
