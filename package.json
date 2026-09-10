@@ -1,0 +1,58 @@
+{
+  "name": "@voxiness/n8n-nodes-voxisms",
+  "version": "0.2.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "description": "n8n community nodes for VoxiSMS: send SMS and trigger on inbound SMS",
+  "keywords": [
+    "n8n-community-node-package",
+    "sms",
+    "voxisms"
+  ],
+  "license": "MIT",
+  "homepage": "https://voxisms.com",
+  "author": {
+    "name": "VoxiSMS"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aboven/voxisms-automations.git",
+    "directory": "voxisms-n8n"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "main": "index.js",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc && node scripts/copy-icons.mjs",
+    "dev": "tsc --watch",
+    "lint": "tsc --noEmit",
+    "prepublishOnly": "npm run build && npm test",
+    "test": "jest"
+  },
+  "n8n": {
+    "n8nNodesApiVersion": 1,
+    "credentials": [
+      "dist/credentials/VoxiSmsApi.credentials.js"
+    ],
+    "nodes": [
+      "dist/nodes/VoxiSms/VoxiSms.node.js",
+      "dist/nodes/VoxiSmsTrigger/VoxiSmsTrigger.node.js"
+    ]
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.0",
+    "@types/node": "^20.0.0",
+    "jest": "^29.6.0",
+    "n8n-workflow": "*",
+    "ts-jest": "^29.1.0",
+    "typescript": "^5.4.0"
+  },
+  "peerDependencies": {
+    "n8n-workflow": "*"
+  }
+}

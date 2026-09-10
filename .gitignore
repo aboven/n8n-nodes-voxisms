@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# Test output
+coverage/
+
+# npm pack artifacts
+*.tgz
+
+# Logs
+npm-debug.log*
+yarn-error.log*
+
+# Editor and OS noise
+*.swp
+*~
+Thumbs.db
+
+# Hidden files stay local: env files, credentials and per-machine tool
+# config never belong in the package. Allow only what it needs.
+.*
+!.gitattributes
+!.gitignore
+!.github/
+!.npmignore
+!.nvmrc
+!.env.example

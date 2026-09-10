@@ -1,0 +1,19 @@
+# Normalize all text files to LF line endings on checkin/checkout.
+* text=auto eol=lf
+
+# Explicit text types (kept as text even if auto-detection is unsure).
+*.md text
+*.json text
+*.js text
+*.mjs text
+*.ts text
+*.svg text
+
+# Binary types: no line-ending conversion, no text diffs.
+*.png binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+
+# Generated: exclude from language stats (diffs stay reviewable).
+package-lock.json linguist-generated=true
