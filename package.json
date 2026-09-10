@@ -17,8 +17,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/aboven/voxisms-automations.git",
-    "directory": "voxisms-n8n"
+    "url": "git+https://github.com/aboven/n8n-nodes-voxisms.git"
+  },
+  "bugs": {
+    "url": "https://github.com/aboven/n8n-nodes-voxisms/issues"
   },
   "engines": {
     "node": ">=20"
