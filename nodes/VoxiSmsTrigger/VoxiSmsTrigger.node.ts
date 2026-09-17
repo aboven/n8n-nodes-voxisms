@@ -42,7 +42,7 @@ export class VoxiSmsTrigger implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'VoxiSMS Trigger',
 		name: 'voxiSmsTrigger',
-		icon: 'file:voxisms.svg',
+		icon: { light: 'file:voxisms.svg', dark: 'file:voxisms.dark.svg' },
 		group: ['trigger'],
 		version: 1,
 		description: 'Starts the workflow when your VoxiSMS number receives an inbound SMS.',

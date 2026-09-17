@@ -38,7 +38,7 @@ export class VoxiSms implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'VoxiSMS',
 		name: 'voxiSms',
-		icon: 'file:voxisms.svg',
+		icon: { light: 'file:voxisms.svg', dark: 'file:voxisms.dark.svg' },
 		group: ['output'],
 		version: 1,
 		description: 'Send an SMS via VoxiSMS',

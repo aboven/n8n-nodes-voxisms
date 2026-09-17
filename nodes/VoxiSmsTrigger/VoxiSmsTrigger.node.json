@@ -1,0 +1,18 @@
+{
+	"node": "@voxiness/n8n-nodes-voxisms",
+	"nodeVersion": "1.0",
+	"codexVersion": "1.0",
+	"categories": ["Communication"],
+	"resources": {
+		"credentialDocumentation": [
+			{
+				"url": "https://github.com/aboven/n8n-nodes-voxisms?tab=readme-ov-file#credentials"
+			}
+		],
+		"primaryDocumentation": [
+			{
+				"url": "https://github.com/aboven/n8n-nodes-voxisms?tab=readme-ov-file"
+			}
+		]
+	}
+}

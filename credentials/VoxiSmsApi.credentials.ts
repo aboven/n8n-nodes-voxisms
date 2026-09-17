@@ -30,7 +30,7 @@ export class VoxiSmsApi implements ICredentialType {
 
 	displayName = 'VoxiSMS API';
 
-	icon: Icon = 'file:../nodes/VoxiSms/voxisms.svg';
+	icon: Icon = { light: 'file:../nodes/VoxiSms/voxisms.svg', dark: 'file:../nodes/VoxiSms/voxisms.dark.svg' };
 
 	// Points at the VoxiPlan dashboard page where users find both fields below.
 	documentationUrl = 'https://app.voxiplan.com/voxisms';
