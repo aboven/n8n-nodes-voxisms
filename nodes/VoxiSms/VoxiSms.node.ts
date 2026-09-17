@@ -7,7 +7,7 @@ import type {
 	INodeTypeDescription,
 	JsonObject,
 } from 'n8n-workflow';
-import { NodeApiError, NodeConnectionTypes } from 'n8n-workflow';
+import { NodeApiError, NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
 
 const ENQUEUE_URL = 'https://api.voxisms.com/v2/enqueue-message';
 
@@ -45,7 +45,7 @@ export class VoxiSms implements INodeType {
 		defaults: {
 			name: 'VoxiSMS',
 		},
-		subtitle: '=Send SMS to {{$parameter["recipient"]}}',
+		subtitle: '={{$parameter["operation"] + ": " + $parameter["resource"]}}',
 		usableAsTool: true,
 		inputs: [NodeConnectionTypes.Main],
 		outputs: [NodeConnectionTypes.Main],
@@ -55,9 +55,40 @@ export class VoxiSms implements INodeType {
 				required: true,
 			},
 		],
-		// Flat, single-action node (like the Zapier "Send SMS" action) — no
-		// resource/operation dropdowns for a package that does exactly one thing.
 		properties: [
+			{
+				displayName: 'Resource',
+				name: 'resource',
+				type: 'options',
+				noDataExpression: true,
+				options: [
+					{
+						name: 'SMS',
+						value: 'sms',
+					},
+				],
+				default: 'sms',
+			},
+			{
+				displayName: 'Operation',
+				name: 'operation',
+				type: 'options',
+				noDataExpression: true,
+				displayOptions: {
+					show: {
+						resource: ['sms'],
+					},
+				},
+				options: [
+					{
+						name: 'Send',
+						value: 'send',
+						description: 'Send an SMS message',
+						action: 'Send SMS message',
+					},
+				],
+				default: 'send',
+			},
 			{
 				displayName: 'Recipient',
 				name: 'recipient',
@@ -66,6 +97,12 @@ export class VoxiSms implements INodeType {
 				required: true,
 				placeholder: '+15551234567',
 				description: 'Phone number in E.164 format (e.g. +15551234567)',
+				displayOptions: {
+					show: {
+						resource: ['sms'],
+						operation: ['send'],
+					},
+				},
 			},
 			{
 				displayName: 'Message',
@@ -75,6 +112,12 @@ export class VoxiSms implements INodeType {
 				default: '',
 				required: true,
 				description: 'The SMS message content',
+				displayOptions: {
+					show: {
+						resource: ['sms'],
+						operation: ['send'],
+					},
+				},
 			},
 			{
 				displayName: 'Message ID',
@@ -82,6 +125,12 @@ export class VoxiSms implements INodeType {
 				type: 'string',
 				default: '',
 				description: 'Optional custom message ID. A UUID will be generated automatically if left empty.',
+				displayOptions: {
+					show: {
+						resource: ['sms'],
+						operation: ['send'],
+					},
+				},
 			},
 		],
 	};
@@ -92,6 +141,17 @@ export class VoxiSms implements INodeType {
 
 		for (let i = 0; i < items.length; i++) {
 			try {
+				const resource = this.getNodeParameter('resource', i) as string;
+				const operation = this.getNodeParameter('operation', i) as string;
+
+				if (resource !== 'sms' || operation !== 'send') {
+					throw new NodeOperationError(
+						this.getNode(),
+						`The operation "${operation}" is not supported`,
+						{ itemIndex: i },
+					);
+				}
+
 				const recipient = this.getNodeParameter('recipient', i) as string;
 				const message = this.getNodeParameter('message', i) as string;
 				const id = this.getNodeParameter('id', i, '') as string;
