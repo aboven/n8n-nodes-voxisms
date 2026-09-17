@@ -45,7 +45,7 @@ export class VoxiSmsApi implements ICredentialType {
 			type: 'string',
 			default: '',
 			required: true,
-			placeholder: '33639980000',
+			placeholder: 'e.g. 33639980000',
 			description:
 				'Enter the phone number you registered, without the leading "+" (e.g. 33639980000). You can find it under "Register your number" on the "Link your phone" page (https://app.voxiplan.com/voxisms) in your VoxiPlan dashboard.',
 		},
@@ -59,7 +59,7 @@ export class VoxiSmsApi implements ICredentialType {
 			default: '',
 			required: true,
 			description:
-				'Copy the token shown under "Activate your token" on the "Link your phone" page (https://app.voxiplan.com/voxisms) in your VoxiPlan dashboard — it\'s the same token you paste from the VoxiSMS Android app during setup.',
+				'Copy the token shown under "Activate your token" on the "Link your phone" page (https://app.voxiplan.com/voxisms) in your VoxiPlan dashboard. It is the same token you paste from the VoxiSMS Android app during setup.',
 		},
 	];
 

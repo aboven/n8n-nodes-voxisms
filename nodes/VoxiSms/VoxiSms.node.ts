@@ -95,7 +95,7 @@ export class VoxiSms implements INodeType {
 				type: 'string',
 				default: '',
 				required: true,
-				placeholder: '+15551234567',
+				placeholder: 'e.g. +15551234567',
 				description: 'Phone number in E.164 format (e.g. +15551234567)',
 				displayOptions: {
 					show: {
@@ -148,7 +148,10 @@ export class VoxiSms implements INodeType {
 					throw new NodeOperationError(
 						this.getNode(),
 						`The operation "${operation}" is not supported`,
-						{ itemIndex: i },
+						{
+							itemIndex: i,
+							description: 'Select "Send" as the operation for the SMS resource.',
+						},
 					);
 				}
 
@@ -194,22 +197,26 @@ export class VoxiSms implements INodeType {
 				// Map the v2 API's real HTTP error statuses to friendly messages, mirroring
 				// the Zapier middleware. The v2 error body shape is { error }.
 				const serverError = serverErrorMessage(body);
-				let friendly: string;
+				let errorMessage: string;
+				let errorDescription: string | undefined;
 				if (statusCode === 401) {
-					friendly =
-						'Authentication failed. Check your Customer ID and Token, and make sure your system clock is accurate (within 5 minutes of server time).';
+					errorMessage = 'VoxiSMS did not accept the credentials on this request';
+					errorDescription =
+						'Check the Customer ID and Token in the VoxiSMS API credential, and make sure your system clock is accurate (within 5 minutes of server time).';
 				} else if (statusCode === 400) {
-					friendly = serverError || 'Bad request';
+					errorMessage = serverError || 'VoxiSMS rejected the request';
 				} else if (statusCode === 405) {
-					friendly = 'Method not allowed';
+					errorMessage = 'VoxiSMS does not allow this request method';
 				} else if (statusCode >= 500) {
-					friendly = serverError || 'Internal server error';
+					errorMessage = serverError || 'VoxiSMS is temporarily unavailable';
+					errorDescription = 'Wait a moment and try again.';
 				} else {
-					friendly = serverError || `Request failed with status code ${statusCode}`;
+					errorMessage = serverError || `VoxiSMS returned status code ${statusCode}`;
 				}
 
 				throw new NodeApiError(this.getNode(), toObject(body) as JsonObject, {
-					message: friendly,
+					message: errorMessage,
+					description: errorDescription,
 					httpCode: String(statusCode),
 					itemIndex: i,
 				});

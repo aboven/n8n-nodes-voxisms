@@ -94,7 +94,8 @@ export class VoxiSmsTrigger implements INodeType {
 				if (!webhookUrl) {
 					throw new NodeOperationError(
 						this.getNode(),
-						'Could not determine the webhook URL for this trigger.',
+						'n8n could not determine the webhook URL for this trigger',
+						{ description: 'Reactivate the workflow, or restart n8n and try again.' },
 					);
 				}
 
@@ -152,31 +153,41 @@ export class VoxiSmsTrigger implements INodeType {
 				if (response.statusCode < 200 || response.statusCode >= 300) {
 					const serverError = typeof data.error === 'string' ? data.error : undefined;
 					let message: string;
+					let description: string | undefined;
 					if (response.statusCode === 403 || response.statusCode === 401) {
-						message =
-							'Authentication failed. Check your Token and make sure your system clock is accurate (requests must be within 5 minutes of server time).';
+						message = 'VoxiSMS did not accept the credentials on this request';
+						description =
+							'Check the Customer ID and Token in the VoxiSMS API credential, and make sure your system clock is accurate (requests must be within 5 minutes of server time).';
 					} else if (response.statusCode === 404) {
-						message = 'Customer ID not found. Check the phone number you registered.';
+						message = 'VoxiSMS could not find this Customer ID';
+						description = 'Check the phone number you registered.';
 					} else if (response.statusCode === 400) {
 						// Per the API spec, a subscribe 400 means: invalid JSON body, a non-HTTPS or
 						// private/internal targetUrl, or an unknown eventTypes/provider value. By far
 						// the most common cause in practice is a webhook URL VoxiSMS cannot accept —
 						// e.g. a local n8n without a public HTTPS URL — so say that explicitly.
-						message = `VoxiSMS rejected the webhook subscription${serverError ? ` (${serverError})` : ''}. The webhook URL was "${webhookUrl}" — it must be public HTTPS (not localhost/private). For local development start n8n with --tunnel or set WEBHOOK_URL to a public HTTPS tunnel.`;
+						message = `VoxiSMS rejected the webhook subscription${serverError ? ` (${serverError})` : ''}`;
+						description = `The webhook URL was "${webhookUrl}". It must be publicly reachable over HTTPS (not localhost or a private address). Set n8n's public webhook URL so it points to a publicly reachable HTTPS address, then reactivate the workflow.`;
+					} else if (response.statusCode === 405) {
+						message = 'VoxiSMS does not allow this request method';
+					} else if (response.statusCode >= 500) {
+						message = serverError || 'VoxiSMS is temporarily unavailable';
+						description = 'Wait a moment and try again.';
 					} else {
-						message = `[${response.statusCode}] ${serverError ?? 'VoxiSMS request failed'}`;
+						message = serverError ?? `VoxiSMS returned status code ${response.statusCode}`;
 					}
 					throw new NodeApiError(
 						this.getNode(),
 						(data as JsonObject) ?? {},
-						{ message, httpCode: String(response.statusCode) },
+						{ message, description, httpCode: String(response.statusCode) },
 					);
 				}
 
 				if (!data.subscriptionId || !data.signingSecret) {
 					throw new NodeOperationError(
 						this.getNode(),
-						'VoxiSMS did not return a subscriptionId and signingSecret when creating the webhook subscription.',
+						'VoxiSMS did not return a subscription ID and signing secret',
+						{ description: 'Deactivate and reactivate this trigger to try registering the subscription again.' },
 					);
 				}
 
@@ -263,7 +274,8 @@ export class VoxiSmsTrigger implements INodeType {
 		if (!signingSecret) {
 			throw new NodeOperationError(
 				this.getNode(),
-				"Cannot verify the inbound SMS delivery: the subscription's signing secret is missing. Please deactivate and reactivate this trigger to recreate the subscription.",
+				"The subscription's signing secret is missing, so this delivery cannot be verified",
+				{ description: 'Deactivate and reactivate this trigger to recreate the subscription.' },
 			);
 		}
 
