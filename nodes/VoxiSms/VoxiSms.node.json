@@ -1,5 +1,5 @@
 {
-	"node": "@voxiness/n8n-nodes-voxisms",
+	"node": "@voxiness/n8n-nodes-voxisms.voxiSms",
 	"nodeVersion": "1.0",
 	"codexVersion": "1.0",
 	"categories": ["Communication"],
