@@ -42,18 +42,21 @@ npm install @voxiness/n8n-nodes-voxisms
 
 ## Credentials
 
-You need a VoxiSMS account and the VoxiSMS Android app installed and linked to your phone number.
+Phone-group API keys and **Reply to Message ID** are unreleased. Published version 0.3.1 uses **Customer ID** and **Token**. The group instructions below describe the upcoming version.
 
-Both nodes use the **VoxiSMS API** credential (Customer ID and Token). Find both on the "Link your phone" page of your VoxiPlan dashboard: https://app.voxiplan.com/voxisms
+For a phone group, expand **API access** in its dashboard card and create an API key. Paste it into the credential's **API Key** field. No phone number or group ID is needed. The same key can be reused in n8n, Make, Zapier and your own server-side clients.
 
-- **Customer ID**: the phone number you registered, without the leading `+` (e.g. `33639980000`). Listed under "Register your number".
-- **Token**: listed under "Activate your token". This is the same token you paste into the VoxiSMS Android app during setup.
+Existing phone-number connections keep their **Customer ID** and **Token**. Leave API Key empty for these connections; saved credentials and workflows keep working without reconnecting.
 
-Use the credential's **Test** button to verify your setup. It performs a signed, read-only status check and does not send an SMS.
+Use **Test** to check the connection. For a group, use its dashboard API key rather than a phone connection key.
+
+Rotation gives you 24 hours to replace the old key in every integration. Existing triggers retain their signing secrets. Revoking group API access stops new calls and future webhook deliveries; it does not disconnect phones or cancel SMS already accepted. After revoking and creating new access, reactivate triggers to register fresh subscriptions. Changing to another group's key also requires trigger reactivation. A key is shown only once in the dashboard.
 
 ## Compatibility
 
 Tested against n8n 2.31.5 (which requires Node.js 22.22 or later).
+
+That compatibility check predates phone-group support. The new group flow has local automated coverage; a complete connection, send and trigger test in n8n is still required before release.
 
 The VoxiSMS Trigger needs n8n reachable at a public HTTPS webhook URL: VoxiSMS must be able to reach it to deliver inbound SMS events. If your n8n instance restricts outbound network access, allow `api.voxisms.com`.
 
@@ -65,11 +68,12 @@ The VoxiSMS Trigger needs n8n reachable at a public HTTPS webhook URL: VoxiSMS m
 |---|---|---|
 | Resource | yes | Fixed to "SMS" |
 | Operation | yes | Fixed to "Send" |
-| Recipient | yes | Phone number in E.164 format (e.g. `+15551234567`) |
+| Recipient | yes | Phone number in E.164 format (e.g. `+12025550101`) |
 | Message | yes | The SMS message content |
-| Message ID | no | Optional custom message ID. A UUID is generated automatically if left empty. |
+| Message ID | no | Optional message reference. With a group key, it also prevents duplicate submissions: 1–128 letters, digits, `_`, `:`, or `-`. Reuse it with the same content and recipient to recover the same message. A different payload returns 409. A fresh UUID is generated when empty, so retrying the node can send again. |
+| Reply to Message ID | no | With a group key, map the incoming trigger’s `messageId` to retain its receiving phone and SIM. Legacy credentials do not support this field. |
 
-On success, the node outputs `{ messageId, sqsMessageId }`.
+Group keys return `{ messageId, status: "accepted" }`; existing connections retain their current response fields. Acceptance is not delivery confirmation. The recipient must match the incoming sender for a reply. Replies stay assigned to the receiving phone and SIM. If that SIM is unavailable, VoxiSMS does not send through another SIM. The phone must run the SIM-aware app version for safe group replies.
 
 ### VoxiSMS Trigger
 
@@ -83,11 +87,11 @@ Each verified delivery emits one item shaped as an `InboundMessageEvent`:
   "event": "inbound_message.received",
   "eventId": "evt_0f2f8f0e-924a-5b8b-8352-6fc04c31ddbd",
   "messageId": "69d44359-1c82-4f84-a9a0-45c89bb4ce98",
-  "customerId": "33639980000",
+  "customerId": "12025550102",
   "occurredAt": "2026-07-14T14:42:18.123Z",
   "messageType": "sms",
-  "fromNumber": "+32470987654",
-  "toNumber": "+33639980000",
+  "fromNumber": "+12025550101",
+  "toNumber": "+12025550102",
   "content": "Yes, that works for me"
 }
 ```
@@ -99,6 +103,10 @@ Deliveries are at-least-once: VoxiSMS may retry a delivery, and n8n does not de-
 ### Example workflow
 
 [examples/auto-reply-to-inbound-sms.json](examples/auto-reply-to-inbound-sms.json) shows a VoxiSMS Trigger connected to a VoxiSMS node that sends an automatic reply to the sender.
+
+This example uses a **group API key** and maps `messageId` into **Reply to Message ID**. Do not map `eventId` or look up the last message from a recipient. For an existing legacy connection, omit that new field; ordinary legacy sending remains unchanged.
+
+Its **Message ID** combines the saved workflow ID and incoming `messageId`. Repeated deliveries to the same workflow therefore reuse the same submission ID; another workflow or incoming message gets a different ID. Keep the recipient and reply content unchanged when retrying that ID. This prevents duplicate API submissions with a group key, not every possible duplicate SMS delivery.
 
 To import it in n8n: open a workflow, use **Import from File** (or paste the file's contents onto the canvas), then select your VoxiSMS credential on both nodes.
 
