@@ -13,6 +13,7 @@ import {
 } from 'n8n-workflow';
 
 import { verifySignature } from '../shared/verifySignature';
+import { requestError } from '../shared/requestError';
 
 // Requests include `/v2`; the HMAC signing contract omits that base path.
 const SUBSCRIPTIONS_URL = 'https://api.voxisms.com/v2/webhook-subscriptions';
@@ -76,11 +77,13 @@ export class VoxiSmsTrigger implements INodeType {
 	// activated/deactivated. `this` is IHookFunctions here.
 	webhookMethods = {
 		default: {
-			// checkExists — n8n asks whether a live subscription already exists so it can skip a
-			// redundant create. We treat the presence of a persisted subscriptionId as truth.
 			async checkExists(this: IHookFunctions): Promise<boolean> {
 				const staticData = this.getWorkflowStaticData('node');
-				return staticData.subscriptionId !== undefined && staticData.subscriptionId !== null;
+				if (!staticData.subscriptionId) return false;
+				const credentials = await this.getCredentials('voxiSmsApi');
+				// Re-register group access on activation: the server returns the same subscription
+				// for an unchanged connection, or a new one after access is recreated.
+				return !String(credentials.apiKey ?? '').trim() && !staticData.usesApiKey;
 			},
 
 			// create — called when the workflow is activated. Registers our webhook URL with the
@@ -117,14 +120,12 @@ export class VoxiSmsTrigger implements INodeType {
 					ignoreHttpStatusErrors: true,
 				};
 
-				const response = (await this.helpers.httpRequestWithAuthentication.call(
-					this,
-					'voxiSmsApi',
-					options,
-				)) as {
-					statusCode: number;
-					body: unknown;
-				};
+				let response: { statusCode: number; body: unknown };
+				try {
+					response = await this.helpers.httpRequestWithAuthentication.call(this, 'voxiSmsApi', options);
+				} catch (error) {
+					throw requestError(this.getNode(), error);
+				}
 
 				// The API returns a JSON string when json:false; the helper may still parse it, so
 				// tolerate both an already-parsed object and a raw string.
@@ -148,10 +149,10 @@ export class VoxiSmsTrigger implements INodeType {
 					if (response.statusCode === 403 || response.statusCode === 401) {
 						message = 'VoxiSMS did not accept the credentials on this request';
 						description =
-							'Check the Customer ID and Token in the VoxiSMS API credential, and make sure your system clock is accurate (requests must be within 5 minutes of server time).';
+							'Check your group API key, or your existing Customer ID and Token. Legacy connections also require an accurate system clock.';
 					} else if (response.statusCode === 404) {
-						message = 'VoxiSMS could not find this Customer ID';
-						description = 'Check the phone number you registered.';
+						message = 'VoxiSMS could not find this connection';
+						description = 'Check your VoxiSMS credentials and reconnect the trigger.';
 					} else if (response.statusCode === 400) {
 						// Per the API spec, a subscribe 400 means: invalid JSON body, a non-HTTPS or
 						// private/internal targetUrl, or an unknown eventTypes/provider value. By far
@@ -169,12 +170,13 @@ export class VoxiSmsTrigger implements INodeType {
 					}
 					throw new NodeApiError(
 						this.getNode(),
-						(data as JsonObject) ?? {},
+						{ message } as JsonObject,
 						{ message, description, httpCode: String(response.statusCode) },
 					);
 				}
 
-				if (!data.subscriptionId || !data.signingSecret) {
+				if (typeof data.subscriptionId !== 'string' || !data.subscriptionId.trim() ||
+					typeof data.signingSecret !== 'string' || !data.signingSecret.trim()) {
 					throw new NodeOperationError(
 						this.getNode(),
 						'VoxiSMS did not return a subscription ID and signing secret',
@@ -182,11 +184,13 @@ export class VoxiSmsTrigger implements INodeType {
 					);
 				}
 
+				const credentials = await this.getCredentials('voxiSmsApi');
 				const staticData = this.getWorkflowStaticData('node');
-				staticData.subscriptionId = data.subscriptionId;
-				// The signingSecret is what verifies every future delivery. Without it we cannot
-				// authenticate deliveries, so it MUST be persisted alongside the subscriptionId.
-				staticData.signingSecret = data.signingSecret;
+				Object.assign(staticData, {
+					subscriptionId: data.subscriptionId,
+					signingSecret: data.signingSecret,
+					usesApiKey: Boolean(String(credentials.apiKey ?? '').trim()),
+				});
 
 				return true;
 			},
@@ -212,19 +216,20 @@ export class VoxiSmsTrigger implements INodeType {
 
 				try {
 					await this.helpers.httpRequestWithAuthentication.call(this, 'voxiSmsApi', options);
-				} catch (error) {
+				} catch {
 					// Network/other failure while unsubscribing: swallow it so deactivation still
 					// clears local state. A stale server-side subscription will simply deliver to a
 					// URL that now rejects, which is harmless (and re-activation re-creates one).
 					this.logger.warn(
-						`VoxiSMS: could not remove webhook subscription ${subscriptionId}: ${(error as Error).message}`,
+						'VoxiSMS: could not remove webhook subscription; check the connection before reactivating.',
 					);
 				}
 
 				// Always clear both keys so a later checkExists reports "no subscription" and a
-				// re-activation creates a fresh one with a fresh signing secret.
+				// re-activation registers a subscription again.
 				delete staticData.subscriptionId;
 				delete staticData.signingSecret;
+				delete staticData.usesApiKey;
 
 				return true;
 			},
