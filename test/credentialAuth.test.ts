@@ -106,3 +106,27 @@ describe('VoxiSmsApi.authenticate', () => {
 		expect(signed.headers!.signature).toBe(expected.signature);
 	});
 });
+
+describe('group API credentials', () => {
+	it('sends only Bearer and strips competing identity headers case-insensitively', async () => {
+		const signed = await authenticate({ apiKey: ' vxs.group.secret ' }, {
+			method: 'POST', url: 'https://api.voxisms.com/v2/messages',
+			headers: { 'Customer-ID': 'old', 'device-id': 'device', SIGNATURE: 'old', authorization: 'old' },
+		});
+		expect(signed.headers).toEqual({ Authorization: 'Bearer vxs.group.secret' });
+		expect(signed.disableFollowRedirect).toBe(true);
+	});
+	it.each(['https://attacker.example/v2/messages', 'http://api.voxisms.com/v2/messages', 'https://api.voxisms.com.evil.test/v2/messages', 'https://user@api.voxisms.com/v2/messages'])('does not disclose credentials to %s', async (url) => {
+		await expect(authenticate({ apiKey: 'secret' }, { url })).rejects.toThrow('only be used');
+	});
+	it('does not silently authenticate missing credentials', async () => {
+		await expect(authenticate({}, { url: 'https://api.voxisms.com/v2/user/status' })).rejects.toThrow('Enter a group API key');
+	});
+});
+
+
+it('sends the validated absolute URL even for protocol-relative generic HTTP input', async () => {
+	const options = await authenticate({ apiKey: 'secret' }, { baseURL: 'https://api.voxisms.com/v2', url: '//attacker.example' });
+	expect(new URL(options.url).origin).toBe('https://api.voxisms.com');
+	expect(options.baseURL).toBeUndefined();
+});
