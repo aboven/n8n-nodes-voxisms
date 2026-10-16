@@ -8,13 +8,13 @@ import type {
 	INodeProperties,
 } from 'n8n-workflow';
 
+import { restrictToVoxiSmsApi } from '../nodes/shared/restrictRequest';
 import { buildSignedHeaders, normalizeCustomerId, STATUS_PATH } from '../nodes/shared/signing';
 
 const BASE_URL = 'https://api.voxisms.com/v2';
 
-// API Gateway strips the `/v2` base path before the Lambda signs, so the signed path is
-// the route without it.
-const signedPath = (url: string): string => new URL(url).pathname.replace(/^\/v2/, '');
+// The public HMAC contract signs the route without the `/v2` base path.
+const signedPath = (url: URL): string => url.pathname.replace(/^\/v2/, '');
 
 // The bytes on the wire must be the bytes that were signed: a pre-serialized string is
 // passed through untouched, an object is serialized exactly once here.
@@ -25,10 +25,12 @@ const bodyToSign = (body: IHttpRequestOptions['body']): string => {
 	return typeof body === 'string' ? body : JSON.stringify(body);
 };
 
+// Legacy phone-number connection used by version 1 of the nodes. The type name stays
+// `voxiSmsApi` so credentials saved with earlier releases keep resolving.
 export class VoxiSmsApi implements ICredentialType {
 	name = 'voxiSmsApi';
 
-	displayName = 'VoxiSMS API';
+	displayName = 'VoxiSMS Legacy API';
 
 	icon: Icon = { light: 'file:../nodes/VoxiSms/voxisms.svg', dark: 'file:../nodes/VoxiSms/voxisms.dark.svg' };
 
@@ -45,9 +47,9 @@ export class VoxiSmsApi implements ICredentialType {
 			type: 'string',
 			default: '',
 			required: true,
-			placeholder: 'e.g. 33639980000',
+			placeholder: 'e.g. 12025550101',
 			description:
-				'Enter the phone number you registered, without the leading "+" (e.g. 33639980000). You can find it under "Register your number" on the "Link your phone" page (https://app.voxiplan.com/voxisms) in your VoxiPlan dashboard.',
+				'Enter the phone number you registered, without the leading "+" (e.g. 12025550101). You can find it under "Register your number" on the "Link your phone" page (https://app.voxiplan.com/voxisms) in your VoxiPlan dashboard.',
 		},
 		{
 			// Labeled "Token" (not "Secret Key") to match the wording in the VoxiPlan
@@ -63,16 +65,17 @@ export class VoxiSmsApi implements ICredentialType {
 		},
 	];
 
-	// Per-user HMAC (VoxiSMS v2): there is no shared api-key, and neither field below is
-	// ever sent in the body. The signature covers method, route, timestamp, customer id and
-	// the exact body bytes, so it is computed per request rather than as a static header.
+	// Per-user HMAC (VoxiSMS v2): neither field is ever sent in the body. The signature
+	// covers method, route, timestamp, customer id and the exact body bytes, so it is
+	// computed per request rather than as a static header.
 	authenticate: IAuthenticate = async (
 		credentials: ICredentialDataDecryptedObject,
 		requestOptions: IHttpRequestOptions,
 	): Promise<IHttpRequestOptions> => {
-		const url = requestOptions.baseURL
-			? `${requestOptions.baseURL.replace(/\/$/, '')}${requestOptions.url}`
-			: requestOptions.url;
+		const url = restrictToVoxiSmsApi(requestOptions);
+		if (!credentials.customerId || !credentials.secretKey) {
+			throw new Error('Enter your Customer ID and Token');
+		}
 
 		requestOptions.headers = {
 			...requestOptions.headers,
@@ -80,8 +83,8 @@ export class VoxiSmsApi implements ICredentialType {
 				method: requestOptions.method ?? 'GET',
 				path: signedPath(url),
 				// Normalize ONCE so the signed canonical and the customer-id header cannot disagree.
-				customerId: normalizeCustomerId((credentials.customerId as string) ?? ''),
-				secretKey: (credentials.secretKey as string) ?? '',
+				customerId: normalizeCustomerId(String(credentials.customerId)),
+				secretKey: String(credentials.secretKey),
 				bodyString: bodyToSign(requestOptions.body),
 			}),
 		};

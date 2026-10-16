@@ -1,6 +1,7 @@
 import type { ICredentialDataDecryptedObject, IHttpRequestOptions } from 'n8n-workflow';
 
 import { VoxiSmsApi } from '../credentials/VoxiSmsApi.credentials';
+import { VoxiSmsGroupApi } from '../credentials/VoxiSmsGroupApi.credentials';
 import { buildSignedHeaders, ENQUEUE_PATH, STATUS_PATH } from '../nodes/shared/signing';
 
 const credentials = {
@@ -16,7 +17,7 @@ const authenticate = new VoxiSmsApi().authenticate as (
 const sign = (options: IHttpRequestOptions) => authenticate(credentials, options);
 
 describe('VoxiSmsApi.authenticate', () => {
-	// The signed path is the route without the `/v2` base path API Gateway strips.
+	// The HMAC contract signs the route without the `/v2` base path.
 	it('signs the base-path-stripped route, not the URL path', async () => {
 		const bodyString = '{"id":"fixed","recipient":"+15551234567","message":"hi","source":"n8n"}';
 
@@ -93,6 +94,19 @@ describe('VoxiSmsApi.authenticate', () => {
 		expect(signed.headers!['Content-Type']).toBe('application/json');
 	});
 
+	it('strips a caller-supplied Authorization header from legacy HMAC requests', async () => {
+		const signed = await sign({
+			method: 'GET',
+			url: 'https://api.voxisms.com/v2/user/status',
+			headers: { Authorization: 'Bearer caller-supplied' },
+		});
+
+		expect(signed.headers).not.toHaveProperty('Authorization');
+		expect(signed.headers).toMatchObject({ 'customer-id': '33612345678' });
+		expect(signed.headers?.timestamp).toBeDefined();
+		expect(signed.headers?.signature).toMatch(/^[a-f0-9]{64}$/);
+	});
+
 	it('signs an absent body as the empty string', async () => {
 		const signed = await sign({ method: 'GET', url: 'https://api.voxisms.com/v2/user/status' });
 		const expected = buildSignedHeaders({
@@ -104,5 +118,89 @@ describe('VoxiSmsApi.authenticate', () => {
 			timestamp: signed.headers!.timestamp as string,
 		});
 		expect(signed.headers!.signature).toBe(expected.signature);
+	});
+});
+
+describe('VoxiSmsApi (legacy) credential', () => {
+	const legacy = new VoxiSmsApi();
+
+	it('keeps the saved type name and asks only for the required Customer ID and Token', () => {
+		expect(legacy.name).toBe('voxiSmsApi');
+		expect(legacy.displayName).toBe('VoxiSMS Legacy API');
+		expect(legacy.properties.map((p) => [p.name, p.displayName, p.required, p.displayOptions])).toEqual([
+			['customerId', 'Customer ID', true, undefined],
+			['secretKey', 'Token', true, undefined],
+		]);
+	});
+
+	it('never sends a Bearer header, even if a stray apiKey is stored', async () => {
+		const signed = await authenticate({ ...credentials, apiKey: 'vxs.group.secret' }, {
+			method: 'GET', url: 'https://api.voxisms.com/v2/user/status',
+		});
+		expect(signed.headers).not.toHaveProperty('Authorization');
+		expect(signed.headers!['customer-id']).toBe('33612345678');
+	});
+
+	it('does not silently authenticate missing credentials', async () => {
+		await expect(authenticate({}, { url: 'https://api.voxisms.com/v2/user/status' })).rejects.toThrow('Customer ID and Token');
+	});
+
+	it.each(['https://attacker.example/v2/enqueue-message', 'http://api.voxisms.com/v2/enqueue-message', 'https://api.voxisms.com/enqueue-message'])('does not sign requests to %s', async (url) => {
+		await expect(sign({ method: 'POST', url, body: '{}' })).rejects.toThrow('only be used');
+	});
+
+	it('disables redirects so a signed request cannot be forwarded', async () => {
+		const signed = await sign({ method: 'GET', url: 'https://api.voxisms.com/v2/user/status' });
+		expect(signed.disableFollowRedirect).toBe(true);
+	});
+});
+
+describe('VoxiSmsGroupApi credential', () => {
+	const group = new VoxiSmsGroupApi();
+	const authenticateGroup = group.authenticate as (
+		credentials: ICredentialDataDecryptedObject,
+		requestOptions: IHttpRequestOptions,
+	) => Promise<IHttpRequestOptions>;
+
+	it('asks only for a required, masked API key', () => {
+		expect(group.name).toBe('voxiSmsGroupApi');
+		expect(group.displayName).toBe('VoxiSMS API');
+		expect(group.properties).toHaveLength(1);
+		expect(group.properties[0]).toMatchObject({ name: 'apiKey', required: true, typeOptions: { password: true } });
+		expect(group.properties[0].description).toContain('API access in your phone group');
+	});
+
+	it('tests the connection against the status endpoint', () => {
+		expect(group.test.request).toEqual({ baseURL: 'https://api.voxisms.com/v2', url: STATUS_PATH, method: 'GET' });
+	});
+
+	it('sends only Bearer and strips competing identity headers case-insensitively', async () => {
+		const signed = await authenticateGroup({ apiKey: ' vxs.group.secret ' }, {
+			method: 'POST', url: 'https://api.voxisms.com/v2/messages',
+			headers: { 'Customer-ID': 'old', 'device-id': 'device', SIGNATURE: 'old', authorization: 'old' },
+		});
+		expect(signed.headers).toEqual({ Authorization: 'Bearer vxs.group.secret' });
+		expect(signed.disableFollowRedirect).toBe(true);
+	});
+
+	it('ignores stray legacy fields', async () => {
+		const signed = await authenticateGroup({ apiKey: 'key', customerId: '3247', secretKey: 'old' }, {
+			method: 'GET', url: 'https://api.voxisms.com/v2/user/status',
+		});
+		expect(signed.headers).toEqual({ Authorization: 'Bearer key' });
+	});
+
+	it.each(['https://attacker.example/v2/messages', 'http://api.voxisms.com/v2/messages', 'https://api.voxisms.com.evil.test/v2/messages', 'https://user@api.voxisms.com/v2/messages'])('does not disclose credentials to %s', async (url) => {
+		await expect(authenticateGroup({ apiKey: 'secret' }, { url })).rejects.toThrow('only be used');
+	});
+
+	it('does not silently authenticate a missing key', async () => {
+		await expect(authenticateGroup({ apiKey: ' ' }, { url: 'https://api.voxisms.com/v2/user/status' })).rejects.toThrow('Enter a phone-group API key');
+	});
+
+	it('sends the validated absolute URL even for protocol-relative generic HTTP input', async () => {
+		const options = await authenticateGroup({ apiKey: 'secret' }, { baseURL: 'https://api.voxisms.com/v2', url: '//attacker.example' });
+		expect(new URL(options.url).origin).toBe('https://api.voxisms.com');
+		expect(options.baseURL).toBeUndefined();
 	});
 });

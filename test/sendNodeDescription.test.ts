@@ -1,4 +1,4 @@
-import type { INodeProperties, INodePropertyOptions } from 'n8n-workflow';
+import { NodeHelpers, type INode, type INodeParameters, type INodeProperties, type INodePropertyOptions } from 'n8n-workflow';
 
 import { VoxiSms } from '../nodes/VoxiSms/VoxiSms.node';
 
@@ -39,8 +39,31 @@ describe('VoxiSms node description', () => {
 		},
 	);
 
-	it('keeps the node version and tool usability unchanged', () => {
-		expect(description.version).toBe(1);
+	it.each([
+		['version 1', 1, {}, false],
+		['version 2 by default', 2, {}, true],
+		['version 2 with API key authentication', 2, { authMethod: 'apiKey' }, true],
+		['version 2 with legacy authentication', 2, { authMethod: 'legacy' }, false],
+	])('shows the reply reference only with API key authentication (%s)', (_label, typeVersion, parameters: INodeParameters, shown) => {
+		const node = { typeVersion } as INode;
+		const resolved = NodeHelpers.getNodeParameters(
+			description.properties,
+			{ resource: 'sms', operation: 'send', ...parameters },
+			true,
+			false,
+			node,
+			description,
+		)!;
+		expect(NodeHelpers.displayParameter(resolved, property('replyToMessageId'), node, description)).toBe(shown);
+	});
+
+	it('keeps version 1 for existing workflows and defaults new nodes to version 2', () => {
+		expect(description.version).toEqual([1, 2]);
+		expect(description.defaultVersion).toBe(2);
 		expect(description.usableAsTool).toBe(true);
 	});
+});
+
+it('places Authentication first and the optional reply reference after the standard send fields', () => {
+	expect(description.properties.map(p => p.name)).toEqual(['authMethod', 'authMethod', 'resource', 'operation', 'recipient', 'message', 'id', 'replyToMessageId']);
 });

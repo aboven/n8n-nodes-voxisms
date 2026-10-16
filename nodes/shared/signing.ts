@@ -1,7 +1,6 @@
 import { createHmac } from 'crypto';
 
-// Base-path-stripped route constants. API Gateway strips the `/v2` prefix, so these
-// are the exact paths the Lambda signs — NOT the full URL paths.
+// The public HMAC contract uses these routes without the `/v2` base path.
 export const ENQUEUE_PATH = '/enqueue-message';
 export const STATUS_PATH = '/user/status';
 // Webhook-subscription collection path. The DELETE route is dynamic
@@ -24,7 +23,7 @@ export interface SignedHeadersParams {
 // keyed by the user's secretKey (raw UTF-8), HMAC-SHA256, lowercase hex.
 //
 // `bodyString` MUST be the exact bytes sent on the wire. For a body-less GET, leave it
-// empty ('') — the trailing '\n' + empty segment matches the server's `body: b""`.
+// empty ('') — the canonical string still includes the final newline.
 // `timestamp` is injectable for deterministic tests; it must be reused verbatim in both
 // the signed canonical and the `timestamp` header.
 //

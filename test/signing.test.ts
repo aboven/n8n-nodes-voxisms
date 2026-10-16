@@ -6,32 +6,32 @@ import {
 } from '../nodes/shared/signing';
 
 describe('buildSignedHeaders', () => {
-	// Committed vector — locks the canonical-string format to the Rust signer.
+	// Committed vector locks the public canonical-string format.
 	// Reproduce with:
-	//   printf '%s\n%s\n%s\n%s\n%s' POST /enqueue-message 1700000000 33612345678 '<body>' \
+	//   printf '%s\n%s\n%s\n%s\n%s' POST /enqueue-message 1700000000 12025550101 '<body>' \
 	//     | openssl dgst -sha256 -hmac 'test-secret-key'
 	it('matches the committed HMAC vector for a POST body', () => {
 		const bodyString =
-			'{"id":"fixed-uuid-1234","recipient":"+15551234567","message":"Hello, world!","webhookUrl":"https://app.voxiplan.com/webhooks/sms/events","source":"zapier"}';
+			'{"id":"fixed-uuid-1234","recipient":"+12025550102","message":"Hello, world!","webhookUrl":"https://example.com/webhooks/sms/events","source":"n8n"}';
 
 		const headers = buildSignedHeaders({
 			method: 'POST',
 			path: ENQUEUE_PATH,
-			customerId: '33612345678',
+			customerId: '12025550101',
 			secretKey: 'test-secret-key',
 			bodyString,
 			timestamp: '1700000000',
 		});
 
 		expect(headers.signature).toBe(
-			'd59bbf2dda7b7527aebbae9188d4a6ce7882b5800f093f451c516ed3ea74540f',
+			'14b8a444c28e7bcc27c3291a3ab736e827f0df764cd61d5c4f33543034e03fee',
 		);
 		expect(headers.signature).toMatch(/^[0-9a-f]{64}$/);
-		expect(headers['customer-id']).toBe('33612345678');
+		expect(headers['customer-id']).toBe('12025550101');
 		expect(headers.timestamp).toBe('1700000000');
 	});
 
-	// Empty-body GET → canonical ends in a trailing '\n' (matches the server's body: b"").
+	// Empty-body GET: the canonical string ends in a trailing '\n'.
 	//   printf '%s\n%s\n%s\n%s\n%s' GET /user/status 1751414400 cust-demo '' \
 	//     | openssl dgst -sha256 -hmac 'supersecret'
 	it('signs an empty body for the status GET', () => {
@@ -66,10 +66,10 @@ describe('buildSignedHeaders', () => {
 
 describe('normalizeCustomerId', () => {
 	it('strips a leading "+" and whitespace', () => {
-		expect(normalizeCustomerId('+33 612 345 678')).toBe('33612345678');
+		expect(normalizeCustomerId('+1 202 555 0101')).toBe('12025550101');
 	});
 
 	it('passes an already-clean id through untouched', () => {
-		expect(normalizeCustomerId('33612345678')).toBe('33612345678');
+		expect(normalizeCustomerId('12025550101')).toBe('12025550101');
 	});
 });

@@ -41,7 +41,8 @@
     "n8nNodesApiVersion": 1,
     "strict": true,
     "credentials": [
-      "dist/credentials/VoxiSmsApi.credentials.js"
+      "dist/credentials/VoxiSmsApi.credentials.js",
+      "dist/credentials/VoxiSmsGroupApi.credentials.js"
     ],
     "nodes": [
       "dist/nodes/VoxiSms/VoxiSms.node.js",

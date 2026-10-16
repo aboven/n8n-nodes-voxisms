@@ -6,7 +6,7 @@
       "id": "8f6f6b3a-8a3a-4a7b-9c1a-1f2b3c4d5e6f",
       "name": "VoxiSMS Trigger",
       "type": "@voxiness/n8n-nodes-voxisms.voxiSmsTrigger",
-      "typeVersion": 1,
+      "typeVersion": 2,
       "position": [
         260,
         300
@@ -18,12 +18,14 @@
         "resource": "sms",
         "operation": "send",
         "recipient": "={{ $json.fromNumber }}",
-        "message": "Thanks for your message! We received it and will get back to you soon."
+        "message": "Thanks for your message! We received it and will get back to you soon.",
+        "id": "={{ 'auto-reply:' + $workflow.id + ':' + $json.messageId }}",
+        "replyToMessageId": "={{ $json.messageId }}"
       },
       "id": "3c2b1a0f-4d5e-6f7a-8b9c-0d1e2f3a4b5c",
       "name": "Send auto-reply",
       "type": "@voxiness/n8n-nodes-voxisms.voxiSms",
-      "typeVersion": 1,
+      "typeVersion": 2,
       "position": [
         480,
         300

@@ -1,3 +1,4 @@
+import { requestError } from '../shared/requestError';
 import { randomUUID } from 'crypto';
 import type {
 	IDataObject,
@@ -9,7 +10,15 @@ import type {
 } from 'n8n-workflow';
 import { NodeApiError, NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
 
-const ENQUEUE_URL = 'https://api.voxisms.com/v2/enqueue-message';
+import {
+	AUTH_METHOD,
+	authMethodProperties,
+	credentialDescriptions,
+	credentialFor,
+	resolveAuthMethod,
+} from '../shared/authentication';
+
+const API_URL = 'https://api.voxisms.com/v2';
 
 // Best-effort JSON parse of an HTTP response body. n8n's httpRequest usually parses a
 // JSON response into an object already, but a string can come back (e.g. non-JSON
@@ -34,13 +43,22 @@ function serverErrorMessage(body: unknown): string | undefined {
 	return typeof parsed.error === 'string' ? parsed.error : undefined;
 }
 
+function publicResponse(body: unknown, groupAccess: boolean): IDataObject {
+	const parsed = toObject(body);
+	return {
+		...(typeof parsed.messageId === 'string' ? { messageId: parsed.messageId } : {}),
+		...(groupAccess && typeof parsed.status === 'string' ? { status: parsed.status } : {}),
+	};
+}
+
 export class VoxiSms implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'VoxiSMS',
 		name: 'voxiSms',
 		icon: { light: 'file:voxisms.svg', dark: 'file:voxisms.dark.svg' },
 		group: ['output'],
-		version: 1,
+		version: [1, 2],
+		defaultVersion: 2,
 		description: 'Send an SMS via VoxiSMS',
 		defaults: {
 			name: 'VoxiSMS',
@@ -49,13 +67,9 @@ export class VoxiSms implements INodeType {
 		usableAsTool: true,
 		inputs: [NodeConnectionTypes.Main],
 		outputs: [NodeConnectionTypes.Main],
-		credentials: [
-			{
-				name: 'voxiSmsApi',
-				required: true,
-			},
-		],
+		credentials: credentialDescriptions,
 		properties: [
+			...authMethodProperties,
 			{
 				displayName: 'Resource',
 				name: 'resource',
@@ -95,8 +109,8 @@ export class VoxiSms implements INodeType {
 				type: 'string',
 				default: '',
 				required: true,
-				placeholder: 'e.g. +15551234567',
-				description: 'Phone number in E.164 format (e.g. +15551234567)',
+				placeholder: 'e.g. +12025550101',
+				description: 'Phone number in E.164 format (e.g. +12025550101). For replies, map fromNumber from the inbound trigger.',
 				displayOptions: {
 					show: {
 						resource: ['sms'],
@@ -124,7 +138,7 @@ export class VoxiSms implements INodeType {
 				name: 'id',
 				type: 'string',
 				default: '',
-				description: 'Optional custom message ID. A UUID will be generated automatically if left empty.',
+				description: 'Optional message reference. Group API keys accept 1–128 letters, digits, _, :, - and deduplicate the same ID and payload. Leave empty to generate a new UUID each execution; Retry On Fail can then send duplicates.',
 				displayOptions: {
 					show: {
 						resource: ['sms'],
@@ -132,12 +146,32 @@ export class VoxiSms implements INodeType {
 					},
 				},
 			},
+			{
+				displayName: 'Reply to Message ID',
+				name: 'replyToMessageId',
+				type: 'string',
+				default: '',
+				displayOptions: {
+					show: { '@version': [2], [AUTH_METHOD]: ['apiKey'], resource: ['sms'], operation: ['send'] },
+				},
+				description: 'Map messageId from the inbound trigger to reply through the receiving phone and SIM. Leave empty for an ordinary send.',
+			},
 		],
 	};
 
 	async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
 		const items = this.getInputData();
 		const returnData: INodeExecutionData[] = [];
+		const { typeVersion } = this.getNode();
+		const authMethod = resolveAuthMethod(
+			typeVersion,
+			typeVersion >= 2 ? this.getNodeParameter(AUTH_METHOD, 0, 'apiKey') : undefined,
+		);
+		if (!authMethod) {
+			throw new NodeOperationError(this.getNode(), 'Select an Authentication method for VoxiSMS');
+		}
+		const groupAccess = authMethod === 'apiKey';
+		const credentialType = credentialFor(authMethod);
 
 		for (let i = 0; i < items.length; i++) {
 			try {
@@ -158,11 +192,19 @@ export class VoxiSms implements INodeType {
 				const recipient = this.getNodeParameter('recipient', i) as string;
 				const message = this.getNodeParameter('message', i) as string;
 				const id = this.getNodeParameter('id', i, '') as string;
+				const replyToMessageId = groupAccess
+					? (this.getNodeParameter('replyToMessageId', i, '') as string)
+					: '';
 
 				// Serialize EXACTLY ONCE and send that string verbatim: the credential signs the
 				// bytes it is handed, so re-encoding an object here would reorder keys and break
 				// the signature.
-				const bodyString = JSON.stringify({
+				const bodyString = JSON.stringify(groupAccess ? {
+					id: id || randomUUID(),
+					to: recipient,
+					message,
+					...(replyToMessageId ? { replyToMessageId } : {}),
+				} : {
 					id: id || randomUUID(),
 					recipient,
 					message,
@@ -171,38 +213,43 @@ export class VoxiSms implements INodeType {
 
 				// returnFullResponse: read the status ourselves for friendly errors.
 				// ignoreHttpStatusErrors: don't throw on non-2xx — we map them below.
-				const response = await this.helpers.httpRequestWithAuthentication.call(
-					this,
-					'voxiSmsApi',
-					{
-						method: 'POST',
-						url: ENQUEUE_URL,
-						headers: { 'Content-Type': 'application/json' },
-						body: bodyString,
-						json: false,
-						returnFullResponse: true,
-						ignoreHttpStatusErrors: true,
-					},
-				);
+				let response;
+				try {
+					response = await this.helpers.httpRequestWithAuthentication.call(
+						this,
+						credentialType,
+						{
+							method: 'POST',
+							url: `${API_URL}/${groupAccess ? 'messages' : 'enqueue-message'}`,
+							headers: { 'Content-Type': 'application/json' },
+							body: bodyString,
+							json: false,
+							returnFullResponse: true,
+							ignoreHttpStatusErrors: true,
+						},
+					);
+				} catch (error) {
+					throw requestError(this.getNode(), error, i);
+				}
 
 				const statusCode = response.statusCode;
 				const body = response.body;
 
 				if (statusCode >= 200 && statusCode < 300) {
-					// Success body: { messageId, sqsMessageId }.
-					returnData.push({ json: toObject(body), pairedItem: { item: i } });
+					// Expose only fields documented by the public API contract.
+					returnData.push({ json: publicResponse(body, groupAccess), pairedItem: { item: i } });
 					continue;
 				}
 
-				// Map the v2 API's real HTTP error statuses to friendly messages, mirroring
-				// the Zapier middleware. The v2 error body shape is { error }.
+				// Map the API's { error } response to an actionable message.
 				const serverError = serverErrorMessage(body);
 				let errorMessage: string;
 				let errorDescription: string | undefined;
-				if (statusCode === 401) {
+				if (statusCode === 401 || statusCode === 403) {
 					errorMessage = 'VoxiSMS did not accept the credentials on this request';
-					errorDescription =
-						'Check the Customer ID and Token in the VoxiSMS API credential, and make sure your system clock is accurate (within 5 minutes of server time).';
+					errorDescription = groupAccess
+						? 'Check the API key in the VoxiSMS API credential.'
+						: 'Check the Customer ID and Token in the VoxiSMS Legacy API credential, and make sure your system clock is accurate (within 5 minutes of server time).';
 				} else if (statusCode === 400) {
 					errorMessage = serverError || 'VoxiSMS rejected the request';
 				} else if (statusCode === 405) {
@@ -214,25 +261,20 @@ export class VoxiSms implements INodeType {
 					errorMessage = serverError || `VoxiSMS returned status code ${statusCode}`;
 				}
 
-				throw new NodeApiError(this.getNode(), toObject(body) as JsonObject, {
+				throw new NodeApiError(this.getNode(), { message: errorMessage } as JsonObject, {
 					message: errorMessage,
 					description: errorDescription,
 					httpCode: String(statusCode),
 					itemIndex: i,
 				});
 			} catch (error) {
-				// Honor "Continue On Fail": emit the error on this item and keep going.
+				const safeError = error instanceof NodeApiError || error instanceof NodeOperationError
+					? error : requestError(this.getNode(), error, i);
 				if (this.continueOnFail()) {
-					returnData.push({
-						json: { error: (error as Error).message },
-						pairedItem: { item: i },
-					});
+					returnData.push({ json: { error: safeError.message }, pairedItem: { item: i } });
 					continue;
 				}
-					throw new NodeApiError(this.getNode(), error as JsonObject, {
-						message: (error as Error).message,
-						itemIndex: i,
-					});
+				throw safeError;
 			}
 		}
 

@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import {
 	NodeApiError,
 	NodeOperationError,
@@ -13,14 +14,70 @@ import {
 } from 'n8n-workflow';
 
 import { verifySignature } from '../shared/verifySignature';
+import { requestError } from '../shared/requestError';
+import { normalizeCustomerId } from '../shared/signing';
+import {
+	AUTH_METHOD,
+	authMethodProperties,
+	credentialDescriptions,
+	credentialFor,
+	resolveAuthMethod,
+} from '../shared/authentication';
 
-// Full v2 URLs. The signed canonical uses the base-path-stripped path (SUBSCRIPTIONS_PATH,
-// no `/v2`) because API Gateway strips the `/v2` prefix before the Lambda sees it — the
-// wire URL and the signed path deliberately differ.
+// Requests include `/v2`; the HMAC signing contract omits that base path.
 const SUBSCRIPTIONS_URL = 'https://api.voxisms.com/v2/webhook-subscriptions';
 
 // The single event type this trigger subscribes to (see openapi SubscribeRequest).
 const EVENT_TYPE = 'inbound_message.received';
+
+const GROUP_UUID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+
+// Version 1 is always legacy; version 2 follows its Authentication selector.
+function usesGroupAccess(context: IHookFunctions): boolean {
+	const { typeVersion } = context.getNode();
+	const authMethod = resolveAuthMethod(
+		typeVersion,
+		typeVersion >= 2 ? context.getNodeParameter(AUTH_METHOD, 'apiKey') : undefined,
+	);
+	if (!authMethod) {
+		throw new NodeOperationError(context.getNode(), 'Select an Authentication method for VoxiSMS');
+	}
+	return authMethod === 'apiKey';
+}
+
+const credentialType = (groupAccess: boolean): string => credentialFor(groupAccess ? 'apiKey' : 'legacy');
+
+// Store only a one-way fingerprint of the authentication identity, never the API key or token.
+function getCredentialFingerprint(credentials: IDataObject, groupAccess: boolean): string | undefined {
+	if (groupAccess) {
+		const [prefix, groupId] = String(credentials.apiKey ?? '').trim().split('.', 3);
+		if (prefix !== 'vxs' || !groupId || !GROUP_UUID_PATTERN.test(groupId)) return undefined;
+		return createHash('sha256').update(`group:${groupId.toLowerCase()}`).digest('hex');
+	}
+
+	const customerId = normalizeCustomerId(String(credentials.customerId ?? ''));
+	if (!customerId) return undefined;
+	return createHash('sha256').update(`legacy:${customerId}`).digest('hex');
+}
+
+function credentialChangeError(context: IHookFunctions): NodeOperationError {
+	return new NodeOperationError(
+		context.getNode(),
+		'Deactivate the workflow before changing its VoxiSMS credential or authentication',
+		{
+			description:
+				'This trigger still has a subscription under its previous connection. Restore that Authentication choice and credential if needed, deactivate the workflow, then select the new ones and reactivate.',
+		},
+	);
+}
+
+function clearSubscriptionState(staticData: IDataObject): void {
+	delete staticData.subscriptionId;
+	delete staticData.signingSecret;
+	delete staticData.usesApiKey;
+	delete staticData.credentialFingerprint;
+	delete staticData.subscriptionCleanupRequired;
+}
 
 // Reads a header case-INsensitively. Express lowercases incoming header names, but we do not
 // want to depend on that: read `x-voxisms-signature` / `x-voxisms-timestamp` defensively so a
@@ -44,25 +101,20 @@ export class VoxiSmsTrigger implements INodeType {
 		name: 'voxiSmsTrigger',
 		icon: { light: 'file:voxisms.svg', dark: 'file:voxisms.dark.svg' },
 		group: ['trigger'],
-		version: 1,
+		version: [1, 2],
+		defaultVersion: 2,
 		description: 'Starts the workflow when your VoxiSMS number receives an inbound SMS.',
 		defaults: {
 			name: 'VoxiSMS Trigger',
 		},
 		subtitle: 'On inbound SMS',
-		// No user-configurable parameters: the subscription is driven entirely by the
-		// credential and the auto-generated webhook URL. Required by INodeTypeDescription.
-		properties: [],
+		// Only the authentication choice is configurable: the subscription is otherwise driven
+		// by the credential and the auto-generated webhook URL.
+		properties: authMethodProperties,
 		// A trigger has no data inputs; it is fed by an incoming webhook, not an upstream node.
 		inputs: [],
 		outputs: [NodeConnectionTypes.Main],
-		credentials: [
-			{
-				// Credential type owned by the parallel Send-SMS agent; referenced here by name.
-				name: 'voxiSmsApi',
-				required: true,
-			},
-		],
+		credentials: credentialDescriptions,
 		webhooks: [
 			{
 				name: 'default',
@@ -79,11 +131,34 @@ export class VoxiSmsTrigger implements INodeType {
 	// activated/deactivated. `this` is IHookFunctions here.
 	webhookMethods = {
 		default: {
-			// checkExists — n8n asks whether a live subscription already exists so it can skip a
-			// redundant create. We treat the presence of a persisted subscriptionId as truth.
 			async checkExists(this: IHookFunctions): Promise<boolean> {
 				const staticData = this.getWorkflowStaticData('node');
-				return staticData.subscriptionId !== undefined && staticData.subscriptionId !== null;
+				if (!staticData.subscriptionId) return false;
+				const usesApiKey = usesGroupAccess(this);
+				const credentials = await this.getCredentials(credentialType(usesApiKey));
+				const fingerprint = getCredentialFingerprint(credentials, usesApiKey);
+				const previousFingerprint = staticData.credentialFingerprint;
+
+				if (staticData.subscriptionCleanupRequired) {
+					throw credentialChangeError(this);
+				}
+
+				if (typeof previousFingerprint === 'string') {
+					if (!fingerprint || fingerprint !== previousFingerprint) {
+						throw credentialChangeError(this);
+					}
+				} else if (this.getNode().typeVersion >= 2 || staticData.usesApiKey === true || !fingerprint) {
+					// Older saved triggers have no fingerprint. Only version 1 legacy subscriptions can
+					// predate fingerprints; do not guess which identity owns any other subscription.
+					throw credentialChangeError(this);
+				} else {
+					// Migrate an existing legacy subscription without asking users to reconnect it.
+					staticData.credentialFingerprint = fingerprint;
+				}
+
+				// Group subscriptions are idempotent for the same identity and are revalidated on
+				// activation. Legacy subscriptions keep their existing no-reconnect behavior.
+				return !usesApiKey;
 			},
 
 			// create — called when the workflow is activated. Registers our webhook URL with the
@@ -99,14 +174,27 @@ export class VoxiSmsTrigger implements INodeType {
 					);
 				}
 
+				const usesApiKey = usesGroupAccess(this);
+				const credentials = await this.getCredentials(credentialType(usesApiKey));
+				const fingerprint = getCredentialFingerprint(credentials, usesApiKey);
+				if (!fingerprint) {
+					throw new NodeOperationError(
+						this.getNode(),
+						'VoxiSMS could not identify the credential for this subscription',
+						{
+							description: usesApiKey
+								? 'Paste the full API key from API access in your phone group.'
+								: 'Check the Customer ID in the VoxiSMS Legacy API credential.',
+						},
+					);
+				}
+
 				// Serialize EXACTLY ONCE and send that string verbatim: the credential signs the
 				// bytes it is handed, so re-encoding an object here would break the signature.
 				const bodyString = JSON.stringify({
 					targetUrl: webhookUrl,
 					eventTypes: [EVENT_TYPE],
-					// The API's SubscribeRequest.provider enum is currently only
-					// ['zapier','make','generic'] — 'n8n' is rejected with a 400 "unknown provider".
-					// Use 'generic' until the backend adds an 'n8n' value (then flip this).
+					// n8n subscriptions use the API's generic provider type.
 					provider: 'generic',
 				});
 
@@ -117,21 +205,17 @@ export class VoxiSmsTrigger implements INodeType {
 				// json:false keeps the signed bytes on the wire.
 					body: bodyString,
 					json: false,
-					// Inspect the status ourselves so a non-2xx becomes a friendly, mapped error
-					// instead of the raw axios-style throw. Mirrors the sibling integrations'
-					// error mapping (Zapier middleware.js, Make attach.response.error).
+					// Map HTTP failures without exposing raw request data in errors.
 					returnFullResponse: true,
 					ignoreHttpStatusErrors: true,
 				};
 
-				const response = (await this.helpers.httpRequestWithAuthentication.call(
-					this,
-					'voxiSmsApi',
-					options,
-				)) as {
-					statusCode: number;
-					body: unknown;
-				};
+				let response: { statusCode: number; body: unknown };
+				try {
+					response = await this.helpers.httpRequestWithAuthentication.call(this, credentialType(usesApiKey), options);
+				} catch (error) {
+					throw requestError(this.getNode(), error);
+				}
 
 				// The API returns a JSON string when json:false; the helper may still parse it, so
 				// tolerate both an already-parsed object and a raw string.
@@ -147,20 +231,19 @@ export class VoxiSmsTrigger implements INodeType {
 				};
 				const data = parseBody(response.body);
 
-				// Non-2xx: map to the same friendly messages the sibling integrations surface, so
-				// the user sees an actionable message rather than a raw HTTP error when they turn
-				// the workflow on. The v2 error body shape is `{ error }`.
+				// The API returns `{ error }`; add actionable guidance for common failures.
 				if (response.statusCode < 200 || response.statusCode >= 300) {
 					const serverError = typeof data.error === 'string' ? data.error : undefined;
 					let message: string;
 					let description: string | undefined;
 					if (response.statusCode === 403 || response.statusCode === 401) {
 						message = 'VoxiSMS did not accept the credentials on this request';
-						description =
-							'Check the Customer ID and Token in the VoxiSMS API credential, and make sure your system clock is accurate (requests must be within 5 minutes of server time).';
+						description = usesApiKey
+							? 'Check the API key in the VoxiSMS API credential.'
+							: 'Check the Customer ID and Token in the VoxiSMS Legacy API credential, and make sure your system clock is accurate (within 5 minutes of server time).';
 					} else if (response.statusCode === 404) {
-						message = 'VoxiSMS could not find this Customer ID';
-						description = 'Check the phone number you registered.';
+						message = 'VoxiSMS could not find this connection';
+						description = 'Check your VoxiSMS credentials and reconnect the trigger.';
 					} else if (response.statusCode === 400) {
 						// Per the API spec, a subscribe 400 means: invalid JSON body, a non-HTTPS or
 						// private/internal targetUrl, or an unknown eventTypes/provider value. By far
@@ -178,12 +261,13 @@ export class VoxiSmsTrigger implements INodeType {
 					}
 					throw new NodeApiError(
 						this.getNode(),
-						(data as JsonObject) ?? {},
+						{ message } as JsonObject,
 						{ message, description, httpCode: String(response.statusCode) },
 					);
 				}
 
-				if (!data.subscriptionId || !data.signingSecret) {
+				if (typeof data.subscriptionId !== 'string' || !data.subscriptionId.trim() ||
+					typeof data.signingSecret !== 'string' || !data.signingSecret.trim()) {
 					throw new NodeOperationError(
 						this.getNode(),
 						'VoxiSMS did not return a subscription ID and signing secret',
@@ -192,10 +276,12 @@ export class VoxiSmsTrigger implements INodeType {
 				}
 
 				const staticData = this.getWorkflowStaticData('node');
-				staticData.subscriptionId = data.subscriptionId;
-				// The signingSecret is what verifies every future delivery. Without it we cannot
-				// authenticate deliveries, so it MUST be persisted alongside the subscriptionId.
-				staticData.signingSecret = data.signingSecret;
+				Object.assign(staticData, {
+					subscriptionId: data.subscriptionId,
+					signingSecret: data.signingSecret,
+					usesApiKey,
+					credentialFingerprint: fingerprint,
+				});
 
 				return true;
 			},
@@ -211,29 +297,79 @@ export class VoxiSmsTrigger implements INodeType {
 					return true;
 				}
 
+				const previousFingerprint = staticData.credentialFingerprint;
+				let usesApiKey: boolean;
+				let credentials: IDataObject;
+				try {
+					usesApiKey = usesGroupAccess(this);
+					credentials = await this.getCredentials(credentialType(usesApiKey));
+				} catch {
+					if (typeof previousFingerprint !== 'string') {
+						staticData.subscriptionCleanupRequired = true;
+					}
+					this.logger.warn(
+						'VoxiSMS: could not remove the webhook subscription because the current connection is unavailable; the saved subscription was retained.',
+					);
+					return true;
+				}
+
+				const fingerprint = getCredentialFingerprint(credentials, usesApiKey);
+				if (typeof previousFingerprint === 'string') {
+					if (!fingerprint || fingerprint !== previousFingerprint) {
+						// n8n normally calls delete with the currently published version's credentials
+						// before registering a changed version. If a credential was edited in place,
+						// do not try to delete another identity's subscription with the new key.
+						this.logger.warn(
+							'VoxiSMS: the current connection does not own the saved webhook subscription; restore it and deactivate the workflow before changing credentials.',
+						);
+						return true;
+					}
+				} else if (this.getNode().typeVersion >= 2 || staticData.usesApiKey === true || !fingerprint) {
+					// Only a version 1 legacy subscription can predate fingerprints. The owner of any
+					// other unidentified subscription cannot be confirmed, so keep its state rather
+					// than risking an orphan.
+					staticData.subscriptionCleanupRequired = true;
+					this.logger.warn(
+						'VoxiSMS: the saved webhook subscription has no verifiable connection identity; its state was retained.',
+					);
+					return true;
+				}
+
 				const options: IHttpRequestOptions = {
 					method: 'DELETE',
 					url: `${SUBSCRIPTIONS_URL}/${subscriptionId}`,
-					// A 404 means the subscription is already gone server-side — that is the desired
-					// end state, so do not throw on it; ignore HTTP status errors and treat as done.
+					// Clear local state only after the API confirms deletion. In particular, a 404
+					// may indicate that the current connection cannot access this subscription.
+					returnFullResponse: true,
 					ignoreHttpStatusErrors: true,
 				};
 
 				try {
-					await this.helpers.httpRequestWithAuthentication.call(this, 'voxiSmsApi', options);
-				} catch (error) {
-					// Network/other failure while unsubscribing: swallow it so deactivation still
-					// clears local state. A stale server-side subscription will simply deliver to a
-					// URL that now rejects, which is harmless (and re-activation re-creates one).
-					this.logger.warn(
-						`VoxiSMS: could not remove webhook subscription ${subscriptionId}: ${(error as Error).message}`,
+					const response = await this.helpers.httpRequestWithAuthentication.call(
+						this,
+						credentialType(usesApiKey),
+						options,
 					);
+					if (response.statusCode < 200 || response.statusCode >= 300) {
+						if (typeof previousFingerprint !== 'string') {
+							staticData.subscriptionCleanupRequired = true;
+						}
+						this.logger.warn(
+							'VoxiSMS: could not confirm webhook subscription removal; the saved subscription was retained.',
+						);
+						return true;
+					}
+				} catch {
+					if (typeof previousFingerprint !== 'string') {
+						staticData.subscriptionCleanupRequired = true;
+					}
+					this.logger.warn(
+						'VoxiSMS: could not confirm webhook subscription removal; the saved subscription was retained.',
+					);
+					return true;
 				}
 
-				// Always clear both keys so a later checkExists reports "no subscription" and a
-				// re-activation creates a fresh one with a fresh signing secret.
-				delete staticData.subscriptionId;
-				delete staticData.signingSecret;
+				clearSubscriptionState(staticData);
 
 				return true;
 			},
@@ -242,7 +378,7 @@ export class VoxiSmsTrigger implements INodeType {
 
 	// webhook — runs for every delivery the API POSTs to our URL. n8n has NOT yet responded to
 	// the HTTP request, so this method both decides the HTTP status AND whether to fire the
-	// workflow. We mirror the Make webhook's response policy exactly (see communication.json):
+	// workflow. The response policy is:
 	//   - signing secret missing  → surface loudly (config broken; user must recreate trigger)
 	//   - reason 'missing'         → 200 {ok:false}, DO NOT fire (unsigned noise, drop quietly)
 	//   - reason invalid|skew|unverifiable → 401, DO NOT fire (present but bad → surface)

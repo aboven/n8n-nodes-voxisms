@@ -2,11 +2,27 @@
 
 All notable changes to this package are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- Version 2 of the VoxiSMS and VoxiSMS Trigger nodes, used by new workflows. Its **Authentication** field defaults to **API Key**, which connects with a phone-group API key through the new **VoxiSMS API** credential and can reply through the receiving phone and SIM. Choose **Legacy Customer ID + Token** to connect a new node with the **VoxiSMS Legacy API** credential instead. Each choice shows only its matching credential.
+
+### Changed
+
+- The Customer ID and Token credential is now named **VoxiSMS Legacy API**. Existing workflows stay on node version 1 and keep using their saved credentials without reconnecting.
+
+### Fixed
+
+- Safely replace trigger credentials or Authentication without orphaning or reusing an existing webhook subscription.
+- Return documented send fields and provide credential guidance for 401/403 responses.
+- Keep VoxiSMS credentials restricted to the VoxiSMS API host, and use stable submission IDs in the auto-reply example.
+
 ## [0.3.1] - 2026-10-01
 
 ### Fixed
 
-- Codex `node` identifiers now use the fully-qualified `<package-name>.<nodeName>` format n8n requires.
+- Node metadata uses the fully qualified identifier format required by n8n.
 
 ## [0.3.0] - 2026-09-17
 
