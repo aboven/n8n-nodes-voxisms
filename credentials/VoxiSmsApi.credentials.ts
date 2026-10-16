@@ -12,8 +12,7 @@ import { buildSignedHeaders, normalizeCustomerId, STATUS_PATH } from '../nodes/s
 
 const BASE_URL = 'https://api.voxisms.com/v2';
 
-// API Gateway strips the `/v2` base path before the Lambda signs, so the signed path is
-// the route without it.
+// The public HMAC contract signs the route without the `/v2` base path.
 const signedPath = (url: string): string => new URL(url).pathname.replace(/^\/v2/, '');
 
 // The bytes on the wire must be the bytes that were signed: a pre-serialized string is
@@ -32,53 +31,82 @@ export class VoxiSmsApi implements ICredentialType {
 
 	icon: Icon = { light: 'file:../nodes/VoxiSms/voxisms.svg', dark: 'file:../nodes/VoxiSms/voxisms.dark.svg' };
 
-	// Points at the VoxiPlan dashboard page where users find both fields below.
+	// API access is managed inside the phone-group cards.
 	documentationUrl = 'https://app.voxiplan.com/voxisms';
 
 	properties: INodeProperties[] = [
 		{
+			displayName: 'API Key',
+			name: 'apiKey',
+			type: 'string',
+			typeOptions: { password: true },
+			default: '',
+			description: 'Create an API key under API access in your phone group. Leave empty only for an existing phone-number connection.',
+		},
+		{
 			// The customer identifier is the registered phone number. We normalize away a
 			// pasted leading "+" / spaces at sign time (normalizeCustomerId), but ask users
 			// to enter it without the "+" to match what they see in the dashboard.
-			displayName: 'Customer ID',
+			displayName: 'Legacy Customer ID',
 			name: 'customerId',
 			type: 'string',
 			default: '',
-			required: true,
-			placeholder: 'e.g. 33639980000',
+			displayOptions: { show: { apiKey: [''] } },
+			placeholder: 'e.g. 12025550101',
 			description:
-				'Enter the phone number you registered, without the leading "+" (e.g. 33639980000). You can find it under "Register your number" on the "Link your phone" page (https://app.voxiplan.com/voxisms) in your VoxiPlan dashboard.',
+				'Enter the phone number you registered, without the leading "+" (e.g. 12025550101). You can find it under "Register your number" on the "Link your phone" page (https://app.voxiplan.com/voxisms) in your VoxiPlan dashboard.',
 		},
 		{
 			// Labeled "Token" (not "Secret Key") to match the wording in the VoxiPlan
 			// dashboard and the VoxiSMS Android app. Masked in the UI via password option.
-			displayName: 'Token',
+			displayName: 'Legacy Token',
 			name: 'secretKey',
 			type: 'string',
 			typeOptions: { password: true },
 			default: '',
-			required: true,
+			displayOptions: { show: { apiKey: [''] } },
 			description:
 				'Copy the token shown under "Activate your token" on the "Link your phone" page (https://app.voxiplan.com/voxisms) in your VoxiPlan dashboard. It is the same token you paste from the VoxiSMS Android app during setup.',
 		},
 	];
 
-	// Per-user HMAC (VoxiSMS v2): there is no shared api-key, and neither field below is
-	// ever sent in the body. The signature covers method, route, timestamp, customer id and
-	// the exact body bytes, so it is computed per request rather than as a static header.
+	// Group keys use Bearer; existing saved credentials retain per-request HMAC.
 	authenticate: IAuthenticate = async (
 		credentials: ICredentialDataDecryptedObject,
 		requestOptions: IHttpRequestOptions,
 	): Promise<IHttpRequestOptions> => {
-		const url = requestOptions.baseURL
-			? `${requestOptions.baseURL.replace(/\/$/, '')}${requestOptions.url}`
-			: requestOptions.url;
+		const url = new URL(/^https?:\/\//i.test(requestOptions.url)
+			? requestOptions.url
+			: `${requestOptions.baseURL?.replace(/\/$/, '') ?? ''}/${requestOptions.url.replace(/^\/+/, '')}`);
+		// n8n can reuse these credentials in its generic HTTP node. Never sign or send
+		// a key to an arbitrary origin, including a redirect from the API.
+		if (url.origin !== 'https://api.voxisms.com' || !url.pathname.startsWith('/v2/') || url.username || url.password) {
+			throw new Error('VoxiSMS credentials can only be used with https://api.voxisms.com/v2/');
+		}
+		// Send the exact URL we validated; protocol-relative input must not be
+		// interpreted differently later by the HTTP client.
+		requestOptions.url = url.href;
+		delete requestOptions.baseURL;
+		requestOptions.disableFollowRedirect = true;
+		for (const header of Object.keys(requestOptions.headers ?? {})) {
+			if (['authorization', 'customer-id', 'device-id', 'pool-id', 'timestamp', 'signature'].includes(header.toLowerCase())) {
+				delete requestOptions.headers![header];
+			}
+		}
+		const apiKey = String(credentials.apiKey ?? '').trim();
+		if (apiKey) {
+			requestOptions.headers = { ...requestOptions.headers, Authorization: `Bearer ${apiKey}` };
+			return requestOptions;
+		}
+		if (!credentials.customerId || !credentials.secretKey) {
+			throw new Error('Enter a group API key or your existing Customer ID and Token');
+		}
 
 		requestOptions.headers = {
 			...requestOptions.headers,
 			...buildSignedHeaders({
 				method: requestOptions.method ?? 'GET',
-				path: signedPath(url),
+				path: signedPath(url.href),
 				// Normalize ONCE so the signed canonical and the customer-id header cannot disagree.
 				customerId: normalizeCustomerId((credentials.customerId as string) ?? ''),
 				secretKey: (credentials.secretKey as string) ?? '',

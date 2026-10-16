@@ -28,7 +28,7 @@ describe('VoxiSms node description', () => {
 		expect((operation.options as INodePropertyOptions[]).map((o) => o.value)).toEqual(['send']);
 	});
 
-	it.each(['recipient', 'message', 'id'])(
+	it.each(['recipient', 'message', 'id', 'replyToMessageId'])(
 		'keeps "%s" with its internal name, shown for sms/send',
 		(name) => {
 			const param = property(name);
@@ -43,4 +43,8 @@ describe('VoxiSms node description', () => {
 		expect(description.version).toBe(1);
 		expect(description.usableAsTool).toBe(true);
 	});
+});
+
+it('places the optional reply reference after the standard send fields', () => {
+	expect(description.properties.map(p => p.name)).toEqual(['resource', 'operation', 'recipient', 'message', 'id', 'replyToMessageId']);
 });

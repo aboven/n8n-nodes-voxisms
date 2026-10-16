@@ -2,6 +2,20 @@
 
 All notable changes to this package are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- One API key to connect a phone group, with existing Customer ID and Token connections still supported.
+- Optional Reply to Message ID to answer through the receiving phone and SIM.
+- Group subscriptions revalidated when a workflow is activated, including after access is revoked and recreated.
+
+### Fixed
+
+- Keep credentials off redirected requests and requests to other hosts.
+- Preserve saved trigger state on incomplete subscription responses and keep request credentials out of connection errors.
+- Reuse a stable submission ID in the group auto-reply example when an incoming message is delivered again.
+
 ## [0.3.1] - 2026-10-01
 
 ### Fixed
