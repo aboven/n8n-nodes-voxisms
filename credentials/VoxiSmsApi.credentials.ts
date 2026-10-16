@@ -12,8 +12,7 @@ import { buildSignedHeaders, normalizeCustomerId, STATUS_PATH } from '../nodes/s
 
 const BASE_URL = 'https://api.voxisms.com/v2';
 
-// API Gateway strips the `/v2` base path before the Lambda signs, so the signed path is
-// the route without it.
+// The public HMAC contract signs the route without the `/v2` base path.
 const signedPath = (url: string): string => new URL(url).pathname.replace(/^\/v2/, '');
 
 // The bytes on the wire must be the bytes that were signed: a pre-serialized string is

@@ -14,9 +14,7 @@ import {
 
 import { verifySignature } from '../shared/verifySignature';
 
-// Full v2 URLs. The signed canonical uses the base-path-stripped path (SUBSCRIPTIONS_PATH,
-// no `/v2`) because API Gateway strips the `/v2` prefix before the Lambda sees it — the
-// wire URL and the signed path deliberately differ.
+// Requests include `/v2`; the HMAC signing contract omits that base path.
 const SUBSCRIPTIONS_URL = 'https://api.voxisms.com/v2/webhook-subscriptions';
 
 // The single event type this trigger subscribes to (see openapi SubscribeRequest).
@@ -58,7 +56,6 @@ export class VoxiSmsTrigger implements INodeType {
 		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
-				// Credential type owned by the parallel Send-SMS agent; referenced here by name.
 				name: 'voxiSmsApi',
 				required: true,
 			},
@@ -104,9 +101,7 @@ export class VoxiSmsTrigger implements INodeType {
 				const bodyString = JSON.stringify({
 					targetUrl: webhookUrl,
 					eventTypes: [EVENT_TYPE],
-					// The API's SubscribeRequest.provider enum is currently only
-					// ['zapier','make','generic'] — 'n8n' is rejected with a 400 "unknown provider".
-					// Use 'generic' until the backend adds an 'n8n' value (then flip this).
+					// n8n subscriptions use the API's generic provider type.
 					provider: 'generic',
 				});
 
@@ -117,9 +112,7 @@ export class VoxiSmsTrigger implements INodeType {
 				// json:false keeps the signed bytes on the wire.
 					body: bodyString,
 					json: false,
-					// Inspect the status ourselves so a non-2xx becomes a friendly, mapped error
-					// instead of the raw axios-style throw. Mirrors the sibling integrations'
-					// error mapping (Zapier middleware.js, Make attach.response.error).
+					// Map HTTP failures without exposing raw request data in errors.
 					returnFullResponse: true,
 					ignoreHttpStatusErrors: true,
 				};
@@ -147,9 +140,7 @@ export class VoxiSmsTrigger implements INodeType {
 				};
 				const data = parseBody(response.body);
 
-				// Non-2xx: map to the same friendly messages the sibling integrations surface, so
-				// the user sees an actionable message rather than a raw HTTP error when they turn
-				// the workflow on. The v2 error body shape is `{ error }`.
+				// The API returns `{ error }`; add actionable guidance for common failures.
 				if (response.statusCode < 200 || response.statusCode >= 300) {
 					const serverError = typeof data.error === 'string' ? data.error : undefined;
 					let message: string;
@@ -242,7 +233,7 @@ export class VoxiSmsTrigger implements INodeType {
 
 	// webhook — runs for every delivery the API POSTs to our URL. n8n has NOT yet responded to
 	// the HTTP request, so this method both decides the HTTP status AND whether to fire the
-	// workflow. We mirror the Make webhook's response policy exactly (see communication.json):
+	// workflow. The response policy is:
 	//   - signing secret missing  → surface loudly (config broken; user must recreate trigger)
 	//   - reason 'missing'         → 200 {ok:false}, DO NOT fire (unsigned noise, drop quietly)
 	//   - reason invalid|skew|unverifiable → 401, DO NOT fire (present but bad → surface)

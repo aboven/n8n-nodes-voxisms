@@ -16,7 +16,7 @@ const authenticate = new VoxiSmsApi().authenticate as (
 const sign = (options: IHttpRequestOptions) => authenticate(credentials, options);
 
 describe('VoxiSmsApi.authenticate', () => {
-	// The signed path is the route without the `/v2` base path API Gateway strips.
+	// The HMAC contract signs the route without the `/v2` base path.
 	it('signs the base-path-stripped route, not the URL path', async () => {
 		const bodyString = '{"id":"fixed","recipient":"+15551234567","message":"hi","source":"n8n"}';
 

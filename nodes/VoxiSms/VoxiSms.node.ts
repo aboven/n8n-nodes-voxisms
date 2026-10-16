@@ -194,8 +194,7 @@ export class VoxiSms implements INodeType {
 					continue;
 				}
 
-				// Map the v2 API's real HTTP error statuses to friendly messages, mirroring
-				// the Zapier middleware. The v2 error body shape is { error }.
+				// Map the API's { error } response to an actionable message.
 				const serverError = serverErrorMessage(body);
 				let errorMessage: string;
 				let errorDescription: string | undefined;
