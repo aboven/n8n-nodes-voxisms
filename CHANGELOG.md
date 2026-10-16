@@ -2,11 +2,23 @@
 
 All notable changes to this package are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- Phone-group API keys and replies through the receiving phone and SIM, while existing Customer ID and Token connections remain supported.
+
+### Fixed
+
+- Safely replace trigger credentials without orphaning an existing webhook subscription.
+- Return documented send fields and provide credential guidance for 401/403 responses.
+- Keep API keys restricted to the VoxiSMS host and stable submission IDs in the auto-reply example.
+
 ## [0.3.1] - 2026-10-01
 
 ### Fixed
 
-- Codex `node` identifiers now use the fully-qualified `<package-name>.<nodeName>` format n8n requires.
+- Node metadata uses the fully qualified identifier format required by n8n.
 
 ## [0.3.0] - 2026-09-17
 
