@@ -16,7 +16,7 @@ const authenticate = new VoxiSmsApi().authenticate as (
 const sign = (options: IHttpRequestOptions) => authenticate(credentials, options);
 
 describe('VoxiSmsApi.authenticate', () => {
-	// The signed path is the route without the `/v2` base path API Gateway strips.
+	// The HMAC contract signs the route without the `/v2` base path.
 	it('signs the base-path-stripped route, not the URL path', async () => {
 		const bodyString = '{"id":"fixed","recipient":"+15551234567","message":"hi","source":"n8n"}';
 
@@ -93,6 +93,19 @@ describe('VoxiSmsApi.authenticate', () => {
 		expect(signed.headers!['Content-Type']).toBe('application/json');
 	});
 
+	it('strips a caller-supplied Authorization header from legacy HMAC requests', async () => {
+		const signed = await sign({
+			method: 'GET',
+			url: 'https://api.voxisms.com/v2/user/status',
+			headers: { Authorization: 'Bearer caller-supplied' },
+		});
+
+		expect(signed.headers).not.toHaveProperty('Authorization');
+		expect(signed.headers).toMatchObject({ 'customer-id': '33612345678' });
+		expect(signed.headers?.timestamp).toBeDefined();
+		expect(signed.headers?.signature).toMatch(/^[a-f0-9]{64}$/);
+	});
+
 	it('signs an absent body as the empty string', async () => {
 		const signed = await sign({ method: 'GET', url: 'https://api.voxisms.com/v2/user/status' });
 		const expected = buildSignedHeaders({
@@ -105,4 +118,28 @@ describe('VoxiSmsApi.authenticate', () => {
 		});
 		expect(signed.headers!.signature).toBe(expected.signature);
 	});
+});
+
+describe('group API credentials', () => {
+	it('sends only Bearer and strips competing identity headers case-insensitively', async () => {
+		const signed = await authenticate({ apiKey: ' vxs.group.secret ' }, {
+			method: 'POST', url: 'https://api.voxisms.com/v2/messages',
+			headers: { 'Customer-ID': 'old', 'device-id': 'device', SIGNATURE: 'old', authorization: 'old' },
+		});
+		expect(signed.headers).toEqual({ Authorization: 'Bearer vxs.group.secret' });
+		expect(signed.disableFollowRedirect).toBe(true);
+	});
+	it.each(['https://attacker.example/v2/messages', 'http://api.voxisms.com/v2/messages', 'https://api.voxisms.com.evil.test/v2/messages', 'https://user@api.voxisms.com/v2/messages'])('does not disclose credentials to %s', async (url) => {
+		await expect(authenticate({ apiKey: 'secret' }, { url })).rejects.toThrow('only be used');
+	});
+	it('does not silently authenticate missing credentials', async () => {
+		await expect(authenticate({}, { url: 'https://api.voxisms.com/v2/user/status' })).rejects.toThrow('Enter a group API key');
+	});
+});
+
+
+it('sends the validated absolute URL even for protocol-relative generic HTTP input', async () => {
+	const options = await authenticate({ apiKey: 'secret' }, { baseURL: 'https://api.voxisms.com/v2', url: '//attacker.example' });
+	expect(new URL(options.url).origin).toBe('https://api.voxisms.com');
+	expect(options.baseURL).toBeUndefined();
 });
