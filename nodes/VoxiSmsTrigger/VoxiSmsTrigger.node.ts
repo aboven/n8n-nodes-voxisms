@@ -77,6 +77,34 @@ function clearSubscriptionState(staticData: IDataObject): void {
 	delete staticData.usesApiKey;
 	delete staticData.credentialFingerprint;
 	delete staticData.subscriptionCleanupRequired;
+	delete staticData.subscriptionRemovalUnconfirmed;
+}
+
+// Returns true only when VoxiSMS confirms removal. Deleting an unknown or already-removed
+// subscription returns 200, so retrying is safe. A 404 may instead indicate that the current
+// connection cannot access this subscription, so it does not confirm removal.
+async function removeSubscription(
+	context: IHookFunctions,
+	subscriptionId: string,
+	usesApiKey: boolean,
+): Promise<boolean> {
+	const options: IHttpRequestOptions = {
+		method: 'DELETE',
+		url: `${SUBSCRIPTIONS_URL}/${subscriptionId}`,
+		returnFullResponse: true,
+		ignoreHttpStatusErrors: true,
+	};
+
+	try {
+		const response = await context.helpers.httpRequestWithAuthentication.call(
+			context,
+			credentialType(usesApiKey),
+			options,
+		);
+		return response.statusCode >= 200 && response.statusCode < 300;
+	} catch {
+		return false;
+	}
 }
 
 // Reads a header case-INsensitively. Express lowercases incoming header names, but we do not
@@ -154,6 +182,20 @@ export class VoxiSmsTrigger implements INodeType {
 				} else {
 					// Migrate an existing legacy subscription without asking users to reconnect it.
 					staticData.credentialFingerprint = fingerprint;
+				}
+
+				if (staticData.subscriptionRemovalUnconfirmed) {
+					// A previous removal may or may not have reached VoxiSMS, so the saved subscription
+					// cannot be assumed active. Retry the idempotent removal, then register afresh.
+					if (!(await removeSubscription(this, staticData.subscriptionId as string, usesApiKey))) {
+						throw new NodeOperationError(
+							this.getNode(),
+							'VoxiSMS could not confirm the state of this trigger\'s previous webhook subscription',
+							{ description: 'Check the VoxiSMS credential, then wait a moment and activate the workflow again.' },
+						);
+					}
+					clearSubscriptionState(staticData);
+					return false;
 				}
 
 				// Group subscriptions are idempotent for the same identity and are revalidated on
@@ -282,6 +324,7 @@ export class VoxiSmsTrigger implements INodeType {
 					usesApiKey,
 					credentialFingerprint: fingerprint,
 				});
+				delete staticData.subscriptionRemovalUnconfirmed;
 
 				return true;
 			},
@@ -335,33 +378,13 @@ export class VoxiSmsTrigger implements INodeType {
 					return true;
 				}
 
-				const options: IHttpRequestOptions = {
-					method: 'DELETE',
-					url: `${SUBSCRIPTIONS_URL}/${subscriptionId}`,
-					// Clear local state only after the API confirms deletion. In particular, a 404
-					// may indicate that the current connection cannot access this subscription.
-					returnFullResponse: true,
-					ignoreHttpStatusErrors: true,
-				};
-
-				try {
-					const response = await this.helpers.httpRequestWithAuthentication.call(
-						this,
-						credentialType(usesApiKey),
-						options,
-					);
-					if (response.statusCode < 200 || response.statusCode >= 300) {
-						if (typeof previousFingerprint !== 'string') {
-							staticData.subscriptionCleanupRequired = true;
-						}
-						this.logger.warn(
-							'VoxiSMS: could not confirm webhook subscription removal; the saved subscription was retained.',
-						);
-						return true;
-					}
-				} catch {
+				// Clear local state only after the API confirms deletion.
+				if (!(await removeSubscription(this, subscriptionId, usesApiKey))) {
 					if (typeof previousFingerprint !== 'string') {
 						staticData.subscriptionCleanupRequired = true;
+					} else {
+						// The request may still have removed the subscription; reactivation must not reuse it unchecked.
+						staticData.subscriptionRemovalUnconfirmed = true;
 					}
 					this.logger.warn(
 						'VoxiSMS: could not confirm webhook subscription removal; the saved subscription was retained.',

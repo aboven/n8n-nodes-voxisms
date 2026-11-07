@@ -314,11 +314,58 @@ it.each([401, 403, 404, 503])('retains the saved state when deletion is not conf
 	const ctx = context(saved, groupA, { statusCode });
 
 	await expect(hooks.delete.call(ctx as never)).resolves.toBe(true);
-	expect(saved).toEqual(originalState);
+	expect(saved).toEqual({ ...originalState, subscriptionRemovalUnconfirmed: true });
 	expect(ctx.helpers.httpRequestWithAuthentication.mock.calls[0][1]).toMatchObject({
 		method: 'DELETE',
 		returnFullResponse: true,
 	});
+});
+
+it.each([
+	['version 1 legacy', legacyA, V1],
+	['version 2 legacy', legacyA, V2_LEGACY],
+	['version 2 API key', groupA, V2_API_KEY],
+])('re-registers a %s subscription after an unconfirmed removal', async (_label, credentials, node) => {
+	const saved: Record<string, unknown> = {};
+	await hooks.create.call(context(saved, credentials, undefined, node) as never);
+
+	// The DELETE response is lost, so VoxiSMS may already have removed the subscription.
+	const deactivate = context(saved, credentials, undefined, node);
+	deactivate.helpers.httpRequestWithAuthentication.mockRejectedValueOnce(new Error('socket hang up'));
+	await expect(hooks.delete.call(deactivate as never)).resolves.toBe(true);
+	expect(saved.subscriptionId).toBe('s');
+
+	const reactivate = context(saved, credentials, { statusCode: 200 }, node);
+	await expect(hooks.checkExists.call(reactivate as never)).resolves.toBe(false);
+	expect(reactivate.helpers.httpRequestWithAuthentication.mock.calls[0][1]).toMatchObject({
+		method: 'DELETE',
+		url: 'https://api.voxisms.com/v2/webhook-subscriptions/s',
+	});
+	expect(saved).toEqual({});
+
+	reactivate.helpers.httpRequestWithAuthentication.mockResolvedValueOnce({
+		statusCode: 200,
+		body: { subscriptionId: 's2', signingSecret: 'new-secret' },
+	});
+	await hooks.create.call(reactivate as never);
+	expect(reactivate.helpers.httpRequestWithAuthentication.mock.calls[1][1]).toMatchObject({ method: 'POST' });
+	expect(saved).toMatchObject({ subscriptionId: 's2', signingSecret: 'new-secret' });
+	expect(saved).not.toHaveProperty('subscriptionRemovalUnconfirmed');
+});
+
+it('does not claim a legacy subscription is active when its earlier removal still cannot be confirmed', async () => {
+	const saved: Record<string, unknown> = {};
+	await hooks.create.call(context(saved, legacyA) as never);
+	await hooks.delete.call(context(saved, legacyA, { statusCode: 503 }) as never);
+	const retainedState = { ...saved };
+	expect(retainedState).toMatchObject({ subscriptionId: 's', subscriptionRemovalUnconfirmed: true });
+
+	const reactivate = context(saved, legacyA, { statusCode: 503 });
+	await expect(hooks.checkExists.call(reactivate as never)).rejects.toThrow(
+		"could not confirm the state of this trigger's previous webhook subscription",
+	);
+	expect(reactivate.helpers.httpRequestWithAuthentication).toHaveBeenCalledTimes(1);
+	expect(saved).toEqual(retainedState);
 });
 
 it('does not expose transport request headers when activation fails', async () => {

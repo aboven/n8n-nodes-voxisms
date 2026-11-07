@@ -245,7 +245,9 @@ export class VoxiSms implements INodeType {
 				const serverError = serverErrorMessage(body);
 				let errorMessage: string;
 				let errorDescription: string | undefined;
-				if (statusCode === 401 || statusCode === 403) {
+				if (groupAccess && statusCode === 403) {
+					errorMessage = serverError || 'Sending is not permitted by the subscription, or the recipient has opted out.';
+				} else if (statusCode === 401 || statusCode === 403) {
 					errorMessage = 'VoxiSMS did not accept the credentials on this request';
 					errorDescription = groupAccess
 						? 'Check the API key in the VoxiSMS API credential.'

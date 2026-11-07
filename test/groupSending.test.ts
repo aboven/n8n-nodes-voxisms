@@ -128,12 +128,51 @@ describe('version 2 (group API key)', () => {
 		expect(result[0][0].json).toEqual({ messageId: 'outbound', status: 'accepted' });
 		expect(result[0][0].json).not.toHaveProperty('sqsMessageId');
 	});
-	it.each([401, 403])('provides credential guidance for HTTP %s', async (statusCode) => {
-		const { ctx } = context(2, '', { error: 'Rejected' }, statusCode);
+	it('provides credential guidance for HTTP 401', async () => {
+		const { ctx, request } = context(2, '', { error: 'Rejected' }, 401);
 		await expect(new VoxiSms().execute.call(ctx as never)).rejects.toMatchObject({
 			message: 'VoxiSMS did not accept the credentials on this request',
 			description: 'Check the API key in the VoxiSMS API credential.',
 		});
+		expect(request).toHaveBeenCalledTimes(1);
+	});
+	it.each([
+		[{ error: 'Recipient has opted out' }, 'Recipient has opted out'],
+		[{}, 'Sending is not permitted by the subscription, or the recipient has opted out.'],
+	])('reports a sending restriction for HTTP 403 (%j)', async (body, message) => {
+		const { ctx, request } = context(2, 'incoming-uuid', body, 403);
+		try {
+			await new VoxiSms().execute.call(ctx as never);
+			throw new Error('Expected failure');
+		} catch (error) {
+			expect(error).toMatchObject({ message, httpCode: '403' });
+			expect((error as NodeApiError).description).not.toEqual(expect.stringContaining('credential'));
+		}
+		expect(request).toHaveBeenCalledTimes(1);
+		expect(request.mock.calls[0][1].url).toBe('https://api.voxisms.com/v2/messages');
+		expect(JSON.parse(request.mock.calls[0][1].body)).toMatchObject({ id: 'reference', replyToMessageId: 'incoming-uuid' });
+	});
+	it.each([false, true])('exposes only the public 403 error with Continue On Fail %s', async (continueOnFail) => {
+		const { ctx, request } = context(2, '', {
+			error: 'Sending is not permitted',
+			request: { headers: { Authorization: 'Bearer private marker' } },
+			internalField: 'private marker',
+		}, 403);
+		ctx.continueOnFail = () => continueOnFail;
+		if (continueOnFail) {
+			expect(await new VoxiSms().execute.call(ctx as never)).toEqual([
+				[{ json: { error: 'Sending is not permitted' }, pairedItem: { item: 0 } }],
+			]);
+		} else {
+			try {
+				await new VoxiSms().execute.call(ctx as never);
+				throw new Error('Expected failure');
+			} catch (error) {
+				expect(error).toMatchObject({ message: 'Sending is not permitted' });
+				expect(JSON.stringify(error)).not.toContain('private marker');
+			}
+		}
+		expect(request).toHaveBeenCalledTimes(1);
 	});
 });
 
