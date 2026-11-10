@@ -23,13 +23,20 @@ function context(
 
 describe('version 1 (legacy credential)', () => {
 	it('keeps legacy saved credentials and payloads working', async () => {
-		const { ctx, request } = context(1);
+		const { ctx, request } = context(1, '', { messageId: 'outbound' });
 		const result = await new VoxiSms().execute.call(ctx as never);
 		expect(request.mock.calls[0][0]).toBe('voxiSmsApi');
 		const options = request.mock.calls[0][1];
 		expect(options.url).toBe('https://api.voxisms.com/v2/enqueue-message');
 		expect(JSON.parse(options.body)).toEqual({ id: 'reference', recipient: '+32470123456', message: '你好 😀', source: 'n8n' });
 		expect(result[0][0].json).toEqual({ messageId: 'outbound' });
+	});
+	it.each(['object', 'JSON string'])('preserves the complete successful %s response for saved workflows', async (format) => {
+		const body = { messageId: 'outbound', extra: 'workflow-data' };
+		const { ctx, request } = context(1, '', body);
+		if (format === 'JSON string') request.mockResolvedValue({ statusCode: 200, body: JSON.stringify(body) });
+		const result = await new VoxiSms().execute.call(ctx as never);
+		expect(result[0][0]).toEqual({ json: body, pairedItem: { item: 0 } });
 	});
 	it('ignores a reply reference that version 1 does not show', async () => {
 		const { ctx, request } = context(1, 'incoming-uuid');

@@ -236,8 +236,8 @@ export class VoxiSms implements INodeType {
 				const body = response.body;
 
 				if (statusCode >= 200 && statusCode < 300) {
-					// Expose only fields documented by the public API contract.
-					returnData.push({ json: publicResponse(body, groupAccess), pairedItem: { item: i } });
+					// Saved version 1 workflows keep their original response fields.
+					returnData.push({ json: typeVersion === 1 ? toObject(body) : publicResponse(body, groupAccess), pairedItem: { item: i } });
 					continue;
 				}
 
