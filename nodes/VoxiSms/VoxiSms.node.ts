@@ -125,7 +125,7 @@ export class VoxiSms implements INodeType {
 				typeOptions: { rows: 4 },
 				default: '',
 				required: true,
-				description: 'The SMS message content',
+				description: 'The SMS message content, up to 1,600 Unicode characters (code points). Longer text is not truncated.',
 				displayOptions: {
 					show: {
 						resource: ['sms'],
@@ -138,7 +138,7 @@ export class VoxiSms implements INodeType {
 				name: 'id',
 				type: 'string',
 				default: '',
-				description: 'Optional message reference. Group API keys accept 1–128 letters, digits, _, :, - and deduplicate the same ID and payload. Leave empty to generate a new UUID each execution; Retry On Fail can then send duplicates.',
+				description: 'Optional message reference. Group API keys accept 1–128 ASCII characters: A–Z, a–z, 0–9, _, :, - and deduplicate the same ID and payload. Leave empty to generate a new UUID each execution; Retry On Fail can then send duplicates.',
 				displayOptions: {
 					show: {
 						resource: ['sms'],

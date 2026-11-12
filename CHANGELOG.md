@@ -15,7 +15,7 @@ All notable changes to this package are documented here. The format follows [Kee
 ### Fixed
 
 - Safely replace trigger credentials or Authentication without orphaning or reusing an existing webhook subscription.
-- Return documented send fields and distinguish group sending restrictions from credential errors.
+- Return only the documented send fields (`messageId`, plus `status` with an API key) from version 2 nodes; version 1 nodes keep their original response fields. Also distinguish group sending restrictions from credential errors.
 - Keep VoxiSMS credentials restricted to the VoxiSMS API host, and use stable submission IDs in the auto-reply example.
 
 ## [0.3.1] - 2026-10-01

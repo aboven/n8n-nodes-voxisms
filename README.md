@@ -71,11 +71,11 @@ The VoxiSMS Trigger needs n8n reachable at a public HTTPS webhook URL: VoxiSMS m
 | Resource | yes | Fixed to "SMS" |
 | Operation | yes | Fixed to "Send" |
 | Recipient | yes | Phone number in E.164 format (e.g. `+12025550101`) |
-| Message | yes | The SMS message content |
-| Message ID | no | Optional message reference. With an API key, it also prevents duplicate submissions: 1–128 letters, digits, `_`, `:`, or `-`. Reuse it with the same content and recipient to recover the same message. A different payload returns 409. A fresh UUID is generated when empty, so retrying the node can send again. |
+| Message | yes | The SMS message content, up to 1,600 Unicode characters (code points). Longer text is not truncated. |
+| Message ID | no | Optional message reference. With an API key, it also prevents duplicate submissions: 1–128 ASCII characters: `A–Z`, `a–z`, `0–9`, `_`, `:`, or `-`. Reuse it with the same content and recipient to recover the same message. A different payload returns 409. A fresh UUID is generated when empty, so retrying the node can send again. |
 | Reply to Message ID | no | Map the incoming trigger’s `messageId` to retain its receiving phone and SIM. Shown only when Authentication is **API Key**. |
 
-Nodes using an API key send through `/messages` and return `{ messageId, status: "accepted" }`; nodes using the legacy credential send through `/enqueue-message` and return `{ messageId }`. Acceptance is not delivery confirmation. The recipient must match the incoming sender for a reply. Replies stay assigned to the receiving phone and SIM. If that SIM is unavailable, VoxiSMS does not send through another SIM. The phone must run the SIM-aware app version for safe group replies.
+Nodes using an API key send through `/messages` and return `{ messageId, status: "accepted" }`; version 2 nodes using the legacy credential send through `/enqueue-message` and return `{ messageId }`. Version 2 nodes output only these documented fields. Version 1 nodes (saved workflows from 0.3.x or earlier) keep returning the original API response body unchanged. Acceptance is not delivery confirmation. The recipient must match the incoming sender for a reply. Replies stay assigned to the receiving phone and SIM. If that SIM is unavailable, VoxiSMS does not send through another SIM. The phone must run the SIM-aware app version for safe group replies.
 
 ### VoxiSMS Trigger
 
